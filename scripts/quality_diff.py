@@ -1,10 +1,17 @@
 #!/usr/bin/env python
-"""Side-by-side quality diff between two LLM backends.
+"""Quality report for one or more LLM backends, side by side.
 
-    uv run python scripts/quality_diff.py --a anthropic --b vllm \
+    # score what an ingest already produced (no further LLM calls)
+    uv run python scripts/quality_diff.py --state data/bench.db --columns store
+
+    # run the same N articles through two backends and compare
+    uv run python scripts/quality_diff.py --columns anthropic,vllm \
         --state data/bench.db --limit 20 --out data/quality-diff.md
 
-Takes the same N articles through both backends and writes a markdown report.
+Takes the same N articles through each column and writes a markdown report.
+A column is either a backend name (which runs it) or the literal `store`,
+meaning "use the summary and body already saved for that article" — useful
+after a benchmark run, and the only option when there is no second API key.
 Beyond eyeballing the prose, it checks the things `papernews/render.py` depends
 on, because a model that mangles them produces *broken PDFs*, not merely worse
 writing:
@@ -66,6 +73,11 @@ class Result:
         return cls(summary, body, True)
 
 
+def read_store(rows) -> list[Result]:
+    """No LLM calls: score whatever the pipeline already stored."""
+    return [Result.build(r.summary or "", r.body or "") for r in rows]
+
+
 async def run_backend(name: str, rows) -> list[Result]:
     backend = make_backend(name)
     try:
@@ -85,53 +97,66 @@ async def run_backend(name: str, rows) -> list[Result]:
         await backend.aclose()
 
 
-def report(rows, a_name: str, a: list[Result], b_name: str, b: list[Result]) -> str:
-    out: list[str] = [f"# Quality diff: {a_name} vs {b_name}", ""]
+def _score(results: list[Result]) -> dict[str, object]:
+    lengths = [len(r.summary.split()) for r in results if r.summary.strip()]
+    return {
+        "articles": len(results),
+        "empty summaries": sum(1 for r in results if not r.summary.strip()),
+        "empty bodies": sum(1 for r in results if not r.body.strip()),
+        "tex_body failures": sum(1 for r in results if not r.tex_ok),
+        "summaries over 40 words": sum(1 for n in lengths if n > 40),
+        "median summary words": (sorted(lengths)[len(lengths) // 2]
+                                 if lengths else 0),
+    }
 
-    def score(results: list[Result]) -> dict[str, int]:
-        return {
-            "empty summaries": sum(1 for r in results if not r.summary.strip()),
-            "empty bodies": sum(1 for r in results if not r.body.strip()),
-            "tex failures": sum(1 for r in results if not r.tex_ok),
-        }
 
+def report(rows, columns: list[tuple[str, list[Result]]]) -> str:
+    names = [n for n, _ in columns]
+    out: list[str] = [f"# Quality report: {' vs '.join(names)}", ""]
+
+    scores = [(n, _score(r)) for n, r in columns]
     out += ["## Totals", "",
-            f"| metric | {a_name} | {b_name} |", "|---|---|---|"]
-    sa, sb = score(a), score(b)
-    for key in sa:
-        out.append(f"| {key} | {sa[key]} | {sb[key]} |")
+            "| metric | " + " | ".join(names) + " |",
+            "|---" * (len(names) + 1) + "|"]
+    for key in scores[0][1]:
+        out.append(f"| {key} | "
+                   + " | ".join(str(s[key]) for _, s in scores) + " |")
 
     out += ["", "## Render-critical markup", "",
-            "Counts are source → backend. A drop means the backend stripped "
-            "markup `render.py` needs; math must match exactly.", "",
-            f"| # | marks in source | {a_name} | {b_name} |", "|---|---|---|---|"]
+            "Counts are source → output. A drop means markup `render.py` needs "
+            "was stripped; math counts must match exactly, because a mangled "
+            "`$...$` produces a broken PDF rather than merely worse prose.", "",
+            "| # | source | " + " | ".join(names) + " |",
+            "|---" * (len(names) + 2) + "|"]
     for i, row in enumerate(rows):
         src = Marks.of(row.text)
-        ma, mb = Marks.of(a[i].body), Marks.of(b[i].body)
+        cells = [f"fences {m.fences}, inline {m.inline}, math {m.math}"
+                 for m in (Marks.of(res[i].body) for _, res in columns)]
         out.append(
             f"| {i} | fences {src.fences}, inline {src.inline}, math {src.math} "
-            f"| fences {ma.fences}, inline {ma.inline}, math {ma.math} "
-            f"| fences {mb.fences}, inline {mb.inline}, math {mb.math} |"
+            "| " + " | ".join(cells) + " |"
         )
 
     out += ["", "## Article by article", ""]
     for i, row in enumerate(rows):
         out += [f"### {i}. {row.title}", "", f"<{row.url}>", ""]
-        for name, res in ((a_name, a[i]), (b_name, b[i])):
-            out += [f"**{name} summary:** {res.summary or '_(empty)_'}", ""]
-            if not res.tex_ok:
-                out += [f"> tex_body failed: `{res.tex_error}`", ""]
+        for name, res in columns:
+            out += [f"**{name} summary:** {res[i].summary or '_(empty)_'}", ""]
+            if not res[i].tex_ok:
+                out += [f"> tex_body failed: `{res[i].tex_error}`", ""]
         out += ["<details><summary>bodies</summary>", ""]
-        for name, res in ((a_name, a[i]), (b_name, b[i])):
-            out += [f"#### {name}", "", "```text", (res.body or "")[:4000], "```", ""]
+        for name, res in columns:
+            out += [f"#### {name}", "", "```text",
+                    (res[i].body or "")[:4000], "```", ""]
         out += ["</details>", ""]
     return "\n".join(out)
 
 
 async def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--a", default="anthropic", help="reference backend")
-    p.add_argument("--b", default="vllm", help="candidate backend")
+    p.add_argument("--columns", default="store",
+                   help="comma-separated: backend names, and/or `store` to "
+                        "score what the pipeline already saved")
     p.add_argument("--state", type=Path, default=Path("state.db"))
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--out", type=Path, default=Path("data/quality-diff.md"))
@@ -147,11 +172,15 @@ async def main() -> int:
         return 2
     print(f"{len(rows)} articles from {args.state}")
 
-    a = await run_backend(args.a, rows)
-    b = await run_backend(args.b, rows)
+    columns: list[tuple[str, list[Result]]] = []
+    for name in [c.strip() for c in args.columns.split(",") if c.strip()]:
+        columns.append(
+            (name, read_store(rows) if name == "store"
+             else await run_backend(name, rows))
+        )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(report(rows, args.a, a, args.b, b), encoding="utf-8")
+    args.out.write_text(report(rows, columns), encoding="utf-8")
     print(f"wrote {args.out}")
     return 0
 

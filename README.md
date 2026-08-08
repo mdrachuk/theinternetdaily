@@ -523,9 +523,11 @@ Two scripts cover what a test suite cannot:
 # per-stage wall clock, tokens/s and peak VRAM, as a markdown table
 uv run python scripts/benchmark.py --backend vllm --state data/bench.db
 
-# the same articles through two backends, side by side, plus checks on the
-# markup render.py depends on (code fences, inline backticks, math delimiters)
-uv run python scripts/quality_diff.py --a anthropic --b vllm --limit 20
+# score what an ingest produced — or run the same articles through two
+# backends side by side — including the markup render.py depends on
+# (code fences, inline backticks, math delimiters)
+uv run python scripts/quality_diff.py --state data/bench.db --columns store
+uv run python scripts/quality_diff.py --columns anthropic,vllm --limit 20
 ```
 
 ## Local development
@@ -633,7 +635,7 @@ papernews/
 │   └── template.tex.j2   # the magazine
 ├── scripts/
 │   ├── benchmark.py      # per-stage timing, tokens/s, peak VRAM
-│   └── quality_diff.py   # backend A vs backend B, incl. markup checks
+│   └── quality_diff.py   # quality report per backend, incl. markup checks
 ├── sources.toml          # configured feeds
 ├── pyproject.toml
 ├── Dockerfile

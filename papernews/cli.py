@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from datetime import date as date_cls, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -155,34 +156,52 @@ async def _run_llm_stage(
 ) -> int:
     """Shared driver for the summarize and rewrite stages: chunk the pending
     rows, run `batch_fn` over each chunk with at most `workers` in flight, and
-    hand each (url_hash, value) pair to `apply_fn`."""
+    store each batch's results as soon as it lands.
+
+    Storing per batch rather than after the whole stage matters on a local
+    model, where one stage runs for tens of minutes: a crash at article 43
+    must not throw away 42 articles' worth of GPU time. Every stage is
+    resumable — whatever was stored is simply not pending next time.
+    """
     batches = _chunks(pending, batch_size)
     _log(f"[{stage}] {len(pending)} pending in {len(batches)} batch(es) "
          f"of {batch_size} (workers={workers})")
     sem = asyncio.Semaphore(workers)
+    finished = 0
 
-    async def _one(rows: list[ArticleRow]) -> list[tuple[str, str]]:
+    async def _one(rows: list[ArticleRow]) -> tuple[int, int]:
+        nonlocal finished
         async with sem:
+            started = time.perf_counter()
             out = await batch_fn([(r.title, r.text or "") for r in rows])
-        return [(rows[i].id, out[i]) for i in range(len(rows))]
+            elapsed = time.perf_counter() - started
+        done = errors = 0
+        for row, value in zip(rows, out):
+            if value:
+                await apply_fn(row.id, value)
+                done += 1
+            else:
+                # The model failed to label this one. Leave it pending rather
+                # than storing junk; the next run picks it up.
+                errors += 1
+        finished += 1
+        # Logged as each batch lands, not after the gather: a silent terminal
+        # for twenty minutes is indistinguishable from a hang.
+        _log(f"  ✓ batch of {len(rows)} "
+             f"({finished}/{len(batches)}, {elapsed:.1f}s, {errors} unusable)")
+        return done, errors
 
-    done = 0
-    errors = 0
     results = await asyncio.gather(
         *(_one(b) for b in batches), return_exceptions=True
     )
+    done = errors = 0
     for batch, res in zip(batches, results):
         if isinstance(res, BaseException):
             errors += len(batch)
             _log(f"  [error] batch ({len(batch)} articles): {res}")
             continue
-        for h, value in res:
-            if value:
-                await apply_fn(h, value)
-                done += 1
-            else:
-                errors += 1
-        _log(f"  ✓ batch of {len(batch)}")
+        done += res[0]
+        errors += res[1]
     _log(f"[{stage}] done {done}/{len(pending)}, {errors} errors")
     return 0
 
