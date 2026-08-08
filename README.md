@@ -517,6 +517,33 @@ summarize → rewrite → edition → LaTeX — with HTTP served by
 so it needs no network, no GPU and no API key. The xelatex step runs too, but
 only where xelatex is installed.
 
+### Measured on a 20 GB card
+
+Reference box: NVIDIA RTX 4000 SFF Ada (20 GB, **70 W**), 20 cores, 62 GB RAM.
+vLLM 0.26.0 serving `google/gemma-4-12B-it-qat-w4a16-ct` (4-bit QAT,
+compressed-tensors) at `--max-model-len 16384 --max-num-seqs 4
+--kv-cache-dtype fp8`. 44 articles from the sources in this repo.
+
+| stage | wall clock | items | LLM calls | in tok | out tok | out tok/s |
+|---|---|---|---|---|---|---|
+| gather + extract | 61 s | 45 | — | — | — | — |
+| summarize | 38 s | 44 | 11 | 29 147 | 2 252 | 59.9 |
+| rewrite | 807 s | 44 | 44 | 93 147 | 66 699 | 82.6 |
+| cover decorations | ~6 s | — | 1 | — | — | — |
+| render (xelatex, 142 pp.) | ~7 s | 41 | — | — | — | — |
+
+**~15 minutes for a full edition, entirely local, no API key present on the
+box.** Weights take 8.3 GiB, leaving 8.9 GiB of KV cache (139 374 tokens);
+peak VRAM was 18.4 GiB of 20.0, the card sat at its 70 W cap and 73 °C, and
+vLLM held 4 concurrent sequences for most of the run. Engine start is ~53 s
+(40 s of it compilation), so keep the server up between editions.
+
+Quality on that run: 0 empty summaries, 0 empty bodies, 0 `tex_body` failures,
+median summary 31 words (the prompt caps it at 40, and nothing exceeded it).
+No article lost math — 41 of 44 came back with exactly the delimiters they went
+in with, and the other 3 *gained* correct ones where `trafilatura` had
+flattened them (`$\alpha$`, `$\mathbb{R}^2$`).
+
 Two scripts cover what a test suite cannot:
 
 ```bash
