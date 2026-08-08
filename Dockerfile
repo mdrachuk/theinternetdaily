@@ -2,21 +2,23 @@
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # System packages: a minimal TeX Live (xelatex + fontspec + microtype + multicol
-# + amsmath + needspace + Latin Modern), poppler for previews, Python 3, Node
-# for the Claude CLI, and a few build-essentials trafilatura wants.
+# + amsmath + needspace + Latin Modern) and poppler for previews. We no longer
+# ask for Python here: bookworm ships 3.11 and the project needs 3.14, so uv
+# downloads and manages the interpreter itself (see below). texlive-latex-extra
+# still drags in a system python3 for its own scripts — papernews never uses it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl \
         texlive-xetex texlive-fonts-recommended texlive-latex-extra \
         texlive-lang-european \
         lmodern \
         poppler-utils \
-        python3 python3-pip python3-venv \
-        build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# uv: resolver + installer + Python provisioner, pinned to a release tag.
+COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /usr/local/bin/uv
 
 # rmapi: reMarkable API client — static Go binary, no runtime deps.
 # Pinned + checksummed per architecture; bump all three when upgrading.
@@ -43,18 +45,22 @@ RUN set -eux; \
 
 WORKDIR /app
 
-# Install the project into a venv so we don't fight with Debian's PEP 668 lock.
-COPY pyproject.toml ./
-RUN python3 -m venv /opt/venv \
- && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
- && /opt/venv/bin/pip install --no-cache-dir \
-        requests feedparser trafilatura jinja2 \
-        flask apscheduler gunicorn \
-        anthropic httpx
+# Interpreter + venv live outside /app so a bind-mounted source tree during
+# development can't shadow them.
+ENV UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
+RUN uv python install 3.14
+
+# Dependencies first, from the lockfile, so the layer caches across source
+# edits. --frozen fails the build if uv.lock has drifted from pyproject.toml.
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen --no-install-project --no-dev
 
 COPY papernews ./papernews
 COPY sources.toml ./
-RUN /opt/venv/bin/pip install --no-cache-dir -e .
+RUN uv sync --frozen --no-dev
 
 # State + cache live on a mounted volume.
 RUN mkdir -p /data/archive/cache

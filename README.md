@@ -420,28 +420,36 @@ anything else you can script.
 Modest, no-network unittest suite for the web/scheduling/hook behaviour:
 
 ```bash
-python -m unittest discover -s tests
+uv run python -m unittest discover -s tests
 ```
 
 ## Local development
 
-You don't have to use Docker — the CLI works directly:
+You don't have to use Docker — the CLI works directly. The project is
+managed with [uv](https://docs.astral.sh/uv/); it reads `.python-version`,
+fetches CPython 3.14 if you don't have it, and creates `.venv` from
+`uv.lock` on first run:
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
+uv sync
 export ANTHROPIC_API_KEY=sk-ant-...   # or: export LLM_BACKEND=ollama OLLAMA_HOST=...
 
-.venv/bin/python -m papernews gather       # fetch + extract
-.venv/bin/python -m papernews summarize    # LLM pass 1 (batched)
-.venv/bin/python -m papernews rewrite      # LLM pass 2 (batched)
-.venv/bin/python -m papernews render       # xelatex → PDF
+uv run papernews gather       # fetch + extract
+uv run papernews summarize    # LLM pass 1 (batched)
+uv run papernews rewrite      # LLM pass 2 (batched)
+uv run papernews render       # xelatex → PDF
 # or all of the above in sequence:
-.venv/bin/python -m papernews build
+uv run papernews build
 ```
 
-Requirements: Python 3.11+, `xelatex` (TeX Live with `texlive-xetex`,
-`texlive-latex-extra`, `lmodern`), `pdftoppm` (poppler).
+Dependency changes go through `pyproject.toml` — `uv add <pkg>` / `uv remove
+<pkg>` to edit and relock in one step, `uv lock --upgrade` to refresh pins.
+Commit `uv.lock`: the Docker build installs with `--frozen` and fails if the
+lockfile has drifted from `pyproject.toml`.
+
+Requirements: [uv](https://docs.astral.sh/uv/getting-started/installation/)
+(no system Python needed — uv provisions 3.14 itself), `xelatex` (TeX Live
+with `texlive-xetex`, `texlive-latex-extra`, `lmodern`), `pdftoppm` (poppler).
 
 ## Customizing the typography
 
