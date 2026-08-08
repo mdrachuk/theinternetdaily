@@ -123,8 +123,16 @@ container restarts.
 
 ## LLM backends
 
-papernews routes all LLM calls through `papernews/llm.py`. Switch backends
-with the `LLM_BACKEND` env var.
+Every LLM call goes through an `LLMBackend` (`papernews/llm.py`) — a protocol
+with three implementations. Pick one with `LLM_BACKEND`, or pass `--backend` to
+the CLI. Nothing is decided at import time, so one process can drive two
+backends if it wants to.
+
+Each backend carries its own batching limits, and that is not a detail: the
+batch that is comfortable for Haiku (8 articles × 16 000 chars, asking for
+32 768 output tokens — roughly 60k tokens) does not fit in a local model's
+context window at all. `--workers` defaults to the backend's own concurrency
+cap for the same reason.
 
 ### Anthropic (default)
 
@@ -137,10 +145,50 @@ ANTHROPIC_API_KEY=sk-ant-...
 Uses `claude-haiku-4-5` by default. Override with `ANTHROPIC_MODEL=claude-sonnet-4-6`
 for higher quality at ~10× the cost.
 
-### Ollama (local)
+### vLLM (local GPU)
 
-Run any model locally — no API key, no per-token cost, nothing leaves your
-machine.
+Serves an open-weights model on your own card over vLLM's OpenAI-compatible
+API. No API key, no per-token cost, nothing leaves the machine.
+
+```bash
+# .env
+LLM_BACKEND=vllm
+HF_TOKEN=hf_...                 # google/gemma-3-12b-it is a gated model
+VLLM_MODEL=google/gemma-3-12b-it
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vllm.yml up
+```
+
+Prerequisites on the host: an NVIDIA GPU with a working `nvidia-smi`, the
+container toolkit wired into Docker (`nvidia-ctk runtime configure
+--runtime=docker`, then restart Docker), and the model licence accepted on
+Hugging Face. The ~25 GB of weights is cached in `./data/hf`, so the download
+happens once.
+
+Sizing on a 20 GB card (an RTX 4000 SFF Ada at 70 W is the reference here):
+FP8 weights are ~12 GB, leaving ~6–7 GB of KV cache, which is what sets
+`--max-model-len 16384` and `--max-num-seqs 4`. Ada has native FP8, so
+`--quantization fp8` costs little quality. All of it is overridable:
+
+| variable | default | what it does |
+|---|---|---|
+| `VLLM_MODEL` | `google/gemma-3-12b-it` | served model |
+| `VLLM_MAX_MODEL_LEN` | `16384` | context window |
+| `VLLM_MAX_NUM_SEQS` | `4` | server-side concurrency |
+| `VLLM_GPU_MEMORY_UTILIZATION` | `0.90` | fraction of VRAM vLLM may use |
+| `VLLM_TIMEOUT` | `1800` | client timeout; a 12B model at 70 W is slow |
+
+Where the backend supports guided decoding — vLLM does, via
+`response_format: json_schema` — the batch protocols switch from positional
+text markers (`N. `, `=== ARTICLE N START ===`) to JSON, because a 12B model
+breaks markers far more often than Haiku does. The marker parsers remain as the
+fallback path, so a reply in either shape is understood.
+
+### Ollama (local CPU or small GPU)
+
+Kept because it is the easiest local option for anyone without a big GPU.
 
 ```bash
 # .env
@@ -148,7 +196,6 @@ LLM_BACKEND=ollama
 OLLAMA_HOST=http://your-ollama-host:11434   # default: http://localhost:11434
 OLLAMA_MODEL=qwen2.5:3b                    # default: mistral
 OLLAMA_TIMEOUT=1800                        # seconds; increase for slow hardware
-PAPERNEWS_WORKERS=1                        # set to 1 for CPU inference
 ```
 
 **Model recommendations:** The rewrite step is token-heavy — aim for a model
@@ -160,9 +207,8 @@ that balances speed and quality for your hardware.
 | `mistral:7b` | ~5 GB | Better quality, needs a discrete GPU |
 | `qwen2.5:7b` | ~5 GB | Good quality/speed balance |
 
-CPU inference works but is slow. A discrete GPU with ROCm (AMD) or CUDA
-(NVIDIA) support makes a significant difference. Set `PAPERNEWS_WORKERS=1`
-when running on CPU to avoid hammering Ollama with concurrent requests.
+CPU inference works but is slow. The Ollama backend already limits itself to
+one batch in flight, so there is no need to set `PAPERNEWS_WORKERS` by hand.
 
 ## Storage and job queues
 
@@ -546,7 +592,8 @@ papernews/
 ├── papernews/
 │   ├── fetch.py          # HN Algolia + RSS feedparser
 │   ├── extract.py        # trafilatura
-│   ├── llm.py            # LLM backend router (Anthropic, vLLM, Ollama)
+│   ├── llm.py            # LLMBackend protocol: Anthropic / vLLM / Ollama
+│   ├── testing.py        # FakeBackend, so CI needs no GPU or API key
 │   ├── summarize.py      # summarization prompts + batching
 │   ├── rewrite.py        # rewrite prompts + batching
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
@@ -571,6 +618,7 @@ papernews/
 ├── pyproject.toml
 ├── Dockerfile
 ├── docker-compose.yml
+├── docker-compose.vllm.yml   # optional local-GPU vLLM overlay
 ├── docker-compose.mongo.yml  # optional MongoDB overlay
 ├── docker-compose.redis.yml  # optional Redis + arq worker overlay
 └── data/                 # gitignored — your SQLite + cached PDFs

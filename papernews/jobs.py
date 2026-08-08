@@ -15,6 +15,7 @@ from . import config
 from .cache import edition_key, ensure_dir, pdf_path, preview_path
 from .cli import cmd_ingest, collect_current_edition, gather_decorations
 from .http import client_context
+from .llm import LLMBackend, make_backend
 from .preview import render_cover_png
 from .render import build_pdf
 from .store import Store, open_store
@@ -46,8 +47,17 @@ async def current_key(store: Store, sources: list[dict]) -> str:
     return edition_key(await store.max_fetched_at(), sources)
 
 
-async def build_pdf_for_key(key: str, store: Store, sources: list[dict]) -> Path:
-    """Build the current-edition PDF into the cache, keyed by `key`."""
+async def build_pdf_for_key(
+    key: str,
+    store: Store,
+    sources: list[dict],
+    backend: LLMBackend | None = None,
+) -> Path:
+    """Build the current-edition PDF into the cache, keyed by `key`.
+
+    A backend is needed only for the cover's world-news bullets; when the
+    caller hasn't got one, build a short-lived one.
+    """
     cache = config.cache_dir()
     out = pdf_path(cache, key)
     if out.exists():
@@ -57,8 +67,14 @@ async def build_pdf_for_key(key: str, store: Store, sources: list[dict]) -> Path
             return out
         ensure_dir(cache)
         articles = await collect_current_edition(store, sources)
-        async with client_context() as client:
-            decorations = await gather_decorations(client)
+        own_backend = backend is None
+        llm = backend or make_backend(config.llm_backend())
+        try:
+            async with client_context() as client:
+                decorations = await gather_decorations(client, llm)
+        finally:
+            if own_backend:
+                await llm.aclose()
         # Use the cache dir as build workdir so .build/ stays beside the PDF.
         tmp_pdf = await build_pdf(
             date.today().isoformat(), articles, cache, decorations=decorations
@@ -119,9 +135,12 @@ async def ingest() -> None:
     async with _ingest_lock:
         sources = config.load_sources()
         store = open_store(config.store_url())
+        backend = make_backend(config.llm_backend())
         try:
             async with client_context() as client:
-                await cmd_ingest(client, store, sources, config.workers())
+                await cmd_ingest(
+                    client, store, backend, sources, config.workers()
+                )
 
             # The hook is an executable on the container's filesystem (usually
             # dropped in via the bind volume) that receives the freshly-built
@@ -131,11 +150,12 @@ async def ingest() -> None:
             if hook:
                 try:
                     key = await current_key(store, sources)
-                    pdf = await build_pdf_for_key(key, store, sources)
+                    pdf = await build_pdf_for_key(key, store, sources, backend)
                     await run_hook(hook, pdf)
                 except Exception as e:
                     _log(f"[post-ingest hook] {e}")
         finally:
+            await backend.aclose()
             await store.close()
 
 

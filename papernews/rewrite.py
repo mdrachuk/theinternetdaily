@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Sequence
 
-from . import llm
+from .llm import LLMBackend
 
 _SYSTEM = (
     "You are a copy editor preparing content for print in a daily digest.\n"
@@ -44,38 +45,120 @@ _SYSTEM = (
     "- Output ONLY those marker-delimited bodies. No surrounding text."
 )
 
-_MODEL = "claude-haiku-4-5"  # reference only; model selection lives in llm.py
-_MAX_CHARS = 16000
+# Alternative batch protocol for backends that can enforce a schema. The
+# `=== ARTICLE N START ===` markers are positional text, and a 12B model drops
+# or mangles them far more often than Haiku does; guided decoding removes the
+# failure mode entirely. The marker parser stays as the fallback.
+_SYSTEM_JSON = _SYSTEM.rsplit("BATCH MODE:", 1)[0] + (
+    "BATCH MODE:\n"
+    "- The user sends one or more articles, each wrapped between "
+    "`=== ARTICLE N START ===` and `=== ARTICLE N END ===` markers.\n"
+    "- Reply with JSON: {\"articles\": [{\"id\": N, \"body\": \"...\"}, ...]}\n"
+    "- One entry per input article, using that article's id.\n"
+    "- The body is the reformatted text. Keep the newlines inside it (JSON "
+    "escapes them as \\n), including the blank line between paragraphs and the "
+    "line breaks inside fenced code blocks.\n"
+    "- No other keys, no prose outside the JSON."
+)
+
+REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "articles": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "body": {"type": "string"},
+                },
+                "required": ["id", "body"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["articles"],
+    "additionalProperties": False,
+}
+
+_MARKER_RE = re.compile(
+    r"=== ARTICLE (\d+) START ===\s*\n(.*?)\n\s*=== ARTICLE \1 END ===",
+    re.DOTALL,
+)
 
 
-async def rewrite(title: str, text: str) -> str:
-    return (await rewrite_batch([(title, text)]))[0]
+def _parse_json(text: str, n: int) -> list[str] | None:
+    """Read the JSON protocol; None if the reply isn't JSON at all."""
+    blob = text.strip()
+    if not blob.startswith("{"):
+        start, end = blob.find("{"), blob.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        blob = blob[start:end + 1]
+    try:
+        data = json.loads(blob)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = [""] * n
+    for item in data.get("articles") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        body = item.get("body")
+        if 0 <= idx < n and isinstance(body, str):
+            out[idx] = body.strip()
+    return out
 
 
-async def rewrite_batch(items: Sequence[tuple[str, str]]) -> list[str]:
+def parse_rewrites(text: str, n: int) -> list[str]:
+    """Parse a batch reply into n bodies: JSON first, markers second.
+
+    Never raises and never returns the wrong length — an item the model failed
+    to delimit comes back empty and stays pending for the next run.
+    """
+    parsed = _parse_json(text, n)
+    if parsed is not None and any(parsed):
+        return parsed
+    out = [""] * n
+    for m in _MARKER_RE.finditer(text):
+        idx = int(m.group(1))
+        if 0 <= idx < n:
+            out[idx] = m.group(2).strip()
+    return out
+
+
+async def rewrite(backend: LLMBackend, title: str, text: str) -> str:
+    return (await rewrite_batch(backend, [(title, text)]))[0]
+
+
+async def rewrite_batch(
+    backend: LLMBackend, items: Sequence[tuple[str, str]]
+) -> list[str]:
     """Rewrite many (title, body) pairs in a single LLM call.
-    Returns one rewritten body per input, in order; empty string for any
-    item the model failed to delimit correctly."""
+    Returns one rewritten body per input, in order; empty string for any item
+    the model failed to delimit correctly."""
     if not items:
         return []
 
+    max_chars = backend.limits.rewrite_max_chars
     parts = []
     for i, (title, text) in enumerate(items):
-        snippet = (text or "")[:_MAX_CHARS]
+        snippet = (text or "")[:max_chars]
         parts.append(
             f"=== ARTICLE {i} START ===\nTitle: {title}\n\n{snippet}\n=== ARTICLE {i} END ==="
         )
     user_msg = "\n\n".join(parts)
 
-    text_out = await llm.chat(_SYSTEM, user_msg, max_tokens=4096 * len(items))
-
-    out = [""] * len(items)
-    pattern = re.compile(
-        r"=== ARTICLE (\d+) START ===\s*\n(.*?)\n\s*=== ARTICLE \1 END ===",
-        re.DOTALL,
+    use_json = backend.supports_json
+    reply = await backend.chat(
+        _SYSTEM_JSON if use_json else _SYSTEM,
+        user_msg,
+        max_tokens=4096 * len(items),
+        json_schema=REWRITE_SCHEMA if use_json else None,
     )
-    for m in pattern.finditer(text_out):
-        idx = int(m.group(1))
-        if 0 <= idx < len(items):
-            out[idx] = m.group(2).strip()
-    return out
+    return parse_rewrites(reply, len(items))

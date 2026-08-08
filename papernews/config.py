@@ -39,9 +39,17 @@ def cache_dir() -> Path:
     return _env_path("PAPERNEWS_CACHE", "archive/cache")
 
 
-def workers() -> int:
-    """Concurrent LLM batches."""
-    return int(os.environ.get("PAPERNEWS_WORKERS", "8"))
+def workers() -> int | None:
+    """Concurrent LLM batches. None means "ask the backend" — its own limit is
+    a better default than a fixed number, since a 70 W local GPU and a hosted
+    API want very different values."""
+    raw = os.environ.get("PAPERNEWS_WORKERS", "").strip()
+    return int(raw) if raw else None
+
+
+def llm_backend() -> str | None:
+    """LLM backend name; None lets papernews.llm.make_backend read the env."""
+    return os.environ.get("LLM_BACKEND") or None
 
 
 def load_sources(path: Path | None = None) -> list[dict]:

@@ -13,6 +13,7 @@ from . import config
 from .extract import extract
 from .fetch import RawItem, fetch_hn, fetch_rss, fetch_wikipedia_events
 from .http import client_context
+from .llm import LLMBackend, make_backend
 from .render import build_pdf
 from .store import ArticleRow, Store, open_store
 from .wiki import (
@@ -140,9 +141,6 @@ async def cmd_gather(
     return 0
 
 
-_BATCH_SIZE = 8  # articles per LLM call
-
-
 def _chunks(seq: list, n: int) -> list[list]:
     return [seq[i:i + n] for i in range(0, len(seq), n)]
 
@@ -153,7 +151,7 @@ async def _run_llm_stage(
     batch_fn,
     apply_fn,
     workers: int,
-    batch_size: int = _BATCH_SIZE,
+    batch_size: int,
 ) -> int:
     """Shared driver for the summarize and rewrite stages: chunk the pending
     rows, run `batch_fn` over each chunk with at most `workers` in flight, and
@@ -189,27 +187,50 @@ async def _run_llm_stage(
     return 0
 
 
-async def cmd_summarize(store: Store, workers: int) -> int:
+def _resolve_workers(backend: LLMBackend, workers: int | None) -> int:
+    """An explicit --workers wins; otherwise take the backend's own cap. For
+    vLLM that should match --max-num-seqs: the server batches continuously, so
+    oversubscribing past it only queues."""
+    return workers if workers else backend.limits.max_concurrent
+
+
+async def cmd_summarize(
+    store: Store, backend: LLMBackend, workers: int | None = None
+) -> int:
     from .summarize import summarize_batch
 
     pending = await store.pending_summary()
     if not pending:
         _log("[summarize] nothing pending")
         return 0
+
+    async def _batch(items):
+        return await summarize_batch(backend, items)
+
     return await _run_llm_stage(
-        "summarize", pending, summarize_batch, store.set_summary, workers
+        "summarize", pending, _batch, store.set_summary,
+        _resolve_workers(backend, workers),
+        backend.limits.summarize_batch,
     )
 
 
-async def cmd_rewrite(store: Store, workers: int) -> int:
+async def cmd_rewrite(
+    store: Store, backend: LLMBackend, workers: int | None = None
+) -> int:
     from .rewrite import rewrite_batch
 
     pending = await store.pending_rewrite()
     if not pending:
         _log("[rewrite] nothing pending")
         return 0
+
+    async def _batch(items):
+        return await rewrite_batch(backend, items)
+
     return await _run_llm_stage(
-        "rewrite", pending, rewrite_batch, store.set_body, workers
+        "rewrite", pending, _batch, store.set_body,
+        _resolve_workers(backend, workers),
+        backend.limits.rewrite_batch,
     )
 
 
@@ -222,7 +243,9 @@ def _format_date(iso: str | None) -> str:
         return iso
 
 
-async def gather_decorations(client: httpx.AsyncClient) -> dict:
+async def gather_decorations(
+    client: httpx.AsyncClient, backend: LLMBackend
+) -> dict:
     """Fetch the cover decorations (Wikipedia world news + QOTD + DYK)."""
     decorations: dict = {}
     wn_res, qotd_res, dyk_res = await asyncio.gather(
@@ -235,7 +258,9 @@ async def gather_decorations(client: httpx.AsyncClient) -> dict:
         _log(f"  [warn] world news: {wn_res}")
     elif wn_res:
         try:
-            decorations["world_news"] = await summarize_world_news(wn_res)
+            decorations["world_news"] = await summarize_world_news(
+                backend, wn_res
+            )
             from datetime import date as _d
             decorations["world_news_date"] = _d.today().strftime("%B %-d, %Y")
         except Exception as e:
@@ -290,6 +315,7 @@ async def collect_current_edition(store: Store, sources: list[dict]) -> list[dic
 async def cmd_render(
     client: httpx.AsyncClient,
     store: Store,
+    backend: LLMBackend,
     date: str,
     out_dir: Path,
     sources: list[dict],
@@ -304,7 +330,7 @@ async def cmd_render(
         _log("[render] no ready articles in store yet")
         return 0
     _log("[render] fetching cover decorations (Wikipedia world news + QOTD + DYK)")
-    decorations = await gather_decorations(client)
+    decorations = await gather_decorations(client, backend)
     _log(f"[render] {len(articles)} articles → PDF")
     out_dir.mkdir(parents=True, exist_ok=True)
     pdf = await build_pdf(date, articles, out_dir, decorations=decorations)
@@ -315,17 +341,18 @@ async def cmd_render(
 async def cmd_ingest(
     client: httpx.AsyncClient,
     store: Store,
+    backend: LLMBackend,
     sources: list[dict],
-    workers: int,
+    workers: int | None = None,
 ) -> int:
     """Run gather + summarize + rewrite. No PDF — that's the renderer's job."""
     rc = await cmd_gather(client, store, sources)
     if rc:
         return rc
-    rc = await cmd_summarize(store, workers)
+    rc = await cmd_summarize(store, backend, workers)
     if rc:
         return rc
-    return await cmd_rewrite(store, workers)
+    return await cmd_rewrite(store, backend, workers)
 
 
 async def cmd_status(store: Store) -> int:
@@ -370,6 +397,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out",    type=Path, default=Path("archive"))
     p.add_argument("--state",  type=Path, default=Path("state.db"),
                    help="SQLite file (shorthand for --store)")
+    p.add_argument("--backend", default=None,
+                   help="LLM backend: anthropic, vllm, or ollama "
+                        "(default: LLM_BACKEND, else anthropic)")
     p.add_argument("--store", default=None,
                    help="store URL, e.g. state.db or "
                         "mongodb://localhost:27017/papernews "
@@ -379,14 +409,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("gather", help="fetch + extract new articles into the store")
 
+    # --workers unset means "ask the backend": a 70 W local GPU and a hosted
+    # API want very different numbers.
     sp_sum = sub.add_parser("summarize", help="summarize articles still missing a summary")
-    sp_sum.add_argument("--workers", type=int, default=6)
+    sp_sum.add_argument("--workers", type=int, default=None)
 
     sp_rw = sub.add_parser("rewrite", help="reformat article bodies into clean paragraphs")
-    sp_rw.add_argument("--workers", type=int, default=6)
+    sp_rw.add_argument("--workers", type=int, default=None)
 
     sp_ing = sub.add_parser("ingest", help="gather + summarize + rewrite (no PDF)")
-    sp_ing.add_argument("--workers", type=int, default=6)
+    sp_ing.add_argument("--workers", type=int, default=None)
 
     sp_ren = sub.add_parser("render", help="render the current edition PDF")
     sp_ren.add_argument("--date", default=date_cls.today().isoformat())
@@ -401,7 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="target store URL (e.g. mongodb://localhost/papernews)")
 
     sp_b = sub.add_parser("build", help="ingest + render (default)")
-    sp_b.add_argument("--workers", type=int, default=6)
+    sp_b.add_argument("--workers", type=int, default=None)
     sp_b.add_argument("--date",    default=date_cls.today().isoformat())
     return p
 
@@ -429,28 +461,38 @@ async def _main(argv: list[str] | None = None) -> int:
         return 2
 
     store = open_store(store_url(args))
-    try:
-        if cmd == "status":
+    if cmd == "status":
+        try:
             return await cmd_status(store)
+        finally:
+            await store.close()
 
+    backend = make_backend(args.backend)
+    workers = getattr(args, "workers", None)
+    try:
         # One client for the whole run, closed on the way out.
         async with client_context() as client:
             if cmd == "gather":
                 return await cmd_gather(client, store, sources)
             if cmd == "summarize":
-                return await cmd_summarize(store, args.workers)
+                return await cmd_summarize(store, backend, workers)
             if cmd == "rewrite":
-                return await cmd_rewrite(store, args.workers)
+                return await cmd_rewrite(store, backend, workers)
             if cmd == "ingest":
-                return await cmd_ingest(client, store, sources, args.workers)
+                return await cmd_ingest(client, store, backend, sources, workers)
             if cmd == "render":
-                return await cmd_render(client, store, args.date, args.out, sources)
+                return await cmd_render(
+                    client, store, backend, args.date, args.out, sources
+                )
             if cmd == "build":
-                rc = await cmd_ingest(client, store, sources, args.workers)
+                rc = await cmd_ingest(client, store, backend, sources, workers)
                 if rc:
                     return rc
-                return await cmd_render(client, store, args.date, args.out, sources)
+                return await cmd_render(
+                    client, store, backend, args.date, args.out, sources
+                )
     finally:
+        await backend.aclose()
         await store.close()
 
     _log(f"[fatal] unknown command: {cmd}")

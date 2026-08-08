@@ -5,9 +5,15 @@ services:
     container_name: papernews
     restart: unless-stopped
     environment:
-      # LLM backend — "anthropic" (default) or "ollama" (bring your own Ollama instance)
+      # LLM backend — "anthropic" (default), "vllm", or "ollama".
+      # For a local GPU, add the overlay: -f docker-compose.vllm.yml
       - LLM_BACKEND=${LLM_BACKEND:-anthropic}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      # Point these at a vLLM server you run yourself; the overlay sets them
+      # for the bundled one.
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_MODEL=${VLLM_MODEL:-}
       # `host.docker.internal` reaches an Ollama running on the host. On
       # Docker Desktop (Mac/Windows) this resolves automatically; the
       # extra_hosts entry below is what makes it work on Linux too.

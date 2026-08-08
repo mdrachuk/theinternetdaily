@@ -16,8 +16,8 @@ from typing import Optional
 import httpx
 import trafilatura
 
-from . import llm
 from .extract import fetch_html
+from .llm import LLMBackend
 
 
 # --- Current events -------------------------------------------------------
@@ -256,7 +256,9 @@ _WORLD_NEWS_SYSTEM = (
 )
 
 
-async def summarize_world_news(items: list[dict]) -> list[dict]:
+async def summarize_world_news(
+    backend: LLMBackend, items: list[dict]
+) -> list[dict]:
     """Rewrite each news item into a single short sentence (~15 words),
     preserving its source attribution. One LLM call per batch, through the
     configured backend — so a local-only install makes no Anthropic calls."""
@@ -265,7 +267,7 @@ async def summarize_world_news(items: list[dict]) -> list[dict]:
 
     user = "\n".join(f"{i+1}. {it['text']}" for i, it in enumerate(items))
     try:
-        text = await llm.chat(
+        text = await backend.chat(
             _WORLD_NEWS_SYSTEM, user, max_tokens=150 * len(items)
         )
     except Exception:

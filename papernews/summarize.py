@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Sequence
 
-from . import llm
+from .llm import LLMBackend
 
 _SYSTEM = (
     "You write a 2-sentence summary of a piece of content for a daily digest.\n"
@@ -22,37 +23,121 @@ _SYSTEM = (
     "- Output ONLY those summary lines, in the same order as the input. No surrounding text."
 )
 
-_MODEL = "claude-haiku-4-5"  # reference only; model selection lives in llm.py
-_MAX_CHARS = 4000
+# Alternative instruction tail used when the backend can enforce a schema.
+# Positional text markers are what a 12B model breaks most often, so where
+# guided decoding is available the protocol becomes JSON and the markers
+# survive only as the fallback parser.
+_SYSTEM_JSON = _SYSTEM.rsplit("BATCH MODE:", 1)[0] + (
+    "BATCH MODE:\n"
+    "- The user sends one or more articles, each wrapped in a numbered "
+    "<article id=\"N\"> block.\n"
+    "- Reply with JSON: {\"summaries\": [{\"id\": N, \"summary\": \"...\"}, ...]}\n"
+    "- One entry per input article, using that article's id. No other keys, no "
+    "prose outside the JSON."
+)
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summaries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["id", "summary"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["summaries"],
+    "additionalProperties": False,
+}
+
+_LINE_RE = re.compile(r"^\s*(\d+)\s*[.)]\s*(.*\S)\s*$")
 
 
-async def summarize(title: str, text: str) -> str:
-    return (await summarize_batch([(title, text)]))[0]
+def _parse_json(text: str, n: int) -> list[str] | None:
+    """Read the JSON protocol. Returns None if the reply isn't JSON at all, so
+    the caller can fall back to the line format."""
+    blob = text.strip()
+    if not blob.startswith("{"):
+        # A model that wrapped the JSON in prose or a fence: take the outermost
+        # braces and try that.
+        start, end = blob.find("{"), blob.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        blob = blob[start:end + 1]
+    try:
+        data = json.loads(blob)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    out = [""] * n
+    for item in data.get("summaries") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            idx = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        summary = item.get("summary")
+        if 0 <= idx < n and isinstance(summary, str):
+            out[idx] = summary.strip()
+    return out
 
 
-async def summarize_batch(items: Sequence[tuple[str, str]]) -> list[str]:
+def parse_summaries(text: str, n: int) -> list[str]:
+    """Parse a batch reply into n summaries, JSON first, numbered lines second.
+
+    Never raises and never returns the wrong length: an item the model failed
+    to label comes back as an empty string, which the caller counts as an error
+    and leaves pending for the next run.
+    """
+    parsed = _parse_json(text, n)
+    if parsed is not None and any(parsed):
+        return parsed
+    out = [""] * n
+    for line in text.splitlines():
+        m = _LINE_RE.match(line)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if 0 <= idx < n:
+            out[idx] = m.group(2)
+    return out
+
+
+async def summarize(backend: LLMBackend, title: str, text: str) -> str:
+    return (await summarize_batch(backend, [(title, text)]))[0]
+
+
+async def summarize_batch(
+    backend: LLMBackend, items: Sequence[tuple[str, str]]
+) -> list[str]:
     """Summarize many (title, body) pairs in a single LLM call.
-    Returns one summary per input, in order. Falls back to empty string for
+    Returns one summary per input, in order. Falls back to an empty string for
     any item the model failed to label correctly."""
     if not items:
         return []
 
+    max_chars = backend.limits.summarize_max_chars
     parts = []
     for i, (title, text) in enumerate(items):
-        snippet = (text or "")[:_MAX_CHARS]
+        snippet = (text or "")[:max_chars]
         parts.append(
             f"<article id=\"{i}\">\n<title>{title}</title>\n<body>\n{snippet}\n</body>\n</article>"
         )
     user_msg = "\n\n".join(parts)
 
-    text = (await llm.chat(_SYSTEM, user_msg, max_tokens=300 * len(items))).strip()
-
-    out = [""] * len(items)
-    for line in text.splitlines():
-        m = re.match(r"^\s*(\d+)\s*[.)]\s*(.*\S)\s*$", line)
-        if not m:
-            continue
-        idx = int(m.group(1))
-        if 0 <= idx < len(items):
-            out[idx] = m.group(2)
-    return out
+    use_json = backend.supports_json
+    reply = await backend.chat(
+        _SYSTEM_JSON if use_json else _SYSTEM,
+        user_msg,
+        max_tokens=300 * len(items),
+        json_schema=SUMMARY_SCHEMA if use_json else None,
+    )
+    return parse_summaries(reply.strip(), len(items))
