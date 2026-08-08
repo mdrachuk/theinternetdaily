@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Sequence
 
 from .llm import LLMBackend
+from .protocol import parse_json_batch
 
 _SYSTEM = (
     "You are a copy editor preparing content for print in a daily digest.\n"
@@ -58,6 +58,9 @@ _SYSTEM_JSON = _SYSTEM.rsplit("BATCH MODE:", 1)[0] + (
     "- The body is the reformatted text. Keep the newlines inside it (JSON "
     "escapes them as \\n), including the blank line between paragraphs and the "
     "line breaks inside fenced code blocks.\n"
+    "- Backslashes must be JSON-escaped: write a LaTeX command as "
+    "\\\\frac, never \\frac, or it decodes to a control character and the "
+    "formula is destroyed.\n"
     "- No other keys, no prose outside the JSON."
 )
 
@@ -87,41 +90,13 @@ _MARKER_RE = re.compile(
 )
 
 
-def _parse_json(text: str, n: int) -> list[str] | None:
-    """Read the JSON protocol; None if the reply isn't JSON at all."""
-    blob = text.strip()
-    if not blob.startswith("{"):
-        start, end = blob.find("{"), blob.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        blob = blob[start:end + 1]
-    try:
-        data = json.loads(blob)
-    except ValueError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    out = [""] * n
-    for item in data.get("articles") or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            idx = int(item.get("id"))
-        except (TypeError, ValueError):
-            continue
-        body = item.get("body")
-        if 0 <= idx < n and isinstance(body, str):
-            out[idx] = body.strip()
-    return out
-
-
 def parse_rewrites(text: str, n: int) -> list[str]:
     """Parse a batch reply into n bodies: JSON first, markers second.
 
     Never raises and never returns the wrong length — an item the model failed
     to delimit comes back empty and stays pending for the next run.
     """
-    parsed = _parse_json(text, n)
+    parsed = parse_json_batch(text, "articles", "body", n)
     if parsed is not None and any(parsed):
         return parsed
     out = [""] * n
@@ -158,7 +133,9 @@ async def rewrite_batch(
     reply = await backend.chat(
         _SYSTEM_JSON if use_json else _SYSTEM,
         user_msg,
-        max_tokens=4096 * len(items),
+        # Per-article budget from the backend, not a flat number: rewriting is
+        # close to 1:1, and a reply that runs out mid-article parses to nothing.
+        max_tokens=backend.limits.rewrite_output_tokens * len(items),
         json_schema=REWRITE_SCHEMA if use_json else None,
     )
     return parse_rewrites(reply, len(items))

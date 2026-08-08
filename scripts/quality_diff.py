@@ -110,7 +110,8 @@ def _score(results: list[Result]) -> dict[str, object]:
     }
 
 
-def report(rows, columns: list[tuple[str, list[Result]]]) -> str:
+def report(rows, columns: list[tuple[str, list[Result]]],
+           source_chars: int) -> str:
     names = [n for n, _ in columns]
     out: list[str] = [f"# Quality report: {' vs '.join(names)}", ""]
 
@@ -126,10 +127,14 @@ def report(rows, columns: list[tuple[str, list[Result]]]) -> str:
             "Counts are source → output. A drop means markup `render.py` needs "
             "was stripped; math counts must match exactly, because a mangled "
             "`$...$` produces a broken PDF rather than merely worse prose.", "",
+            f"The source is counted over its first {source_chars} characters — "
+            "the same slice the rewrite stage actually sends — otherwise every "
+            "long article looks like markup loss when it is only truncation.",
+            "",
             "| # | source | " + " | ".join(names) + " |",
             "|---" * (len(names) + 2) + "|"]
     for i, row in enumerate(rows):
-        src = Marks.of(row.text)
+        src = Marks.of((row.text or "")[:source_chars])
         cells = [f"fences {m.fences}, inline {m.inline}, math {m.math}"
                  for m in (Marks.of(res[i].body) for _, res in columns)]
         out.append(
@@ -160,6 +165,9 @@ async def main() -> int:
     p.add_argument("--state", type=Path, default=Path("state.db"))
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--out", type=Path, default=Path("data/quality-diff.md"))
+    p.add_argument("--source-chars", type=int, default=12000,
+                   help="count source markup over this many characters — set "
+                        "it to the backend's rewrite_max_chars")
     args = p.parse_args()
 
     store = open_store(str(args.state))
@@ -180,7 +188,9 @@ async def main() -> int:
         )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(report(rows, columns), encoding="utf-8")
+    args.out.write_text(
+        report(rows, columns, args.source_chars), encoding="utf-8"
+    )
     print(f"wrote {args.out}")
     return 0
 

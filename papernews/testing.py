@@ -18,6 +18,7 @@ FAKE_LIMITS = BatchLimits(
     summarize_max_chars=2000,
     rewrite_batch=2,
     rewrite_max_chars=4000,
+    rewrite_output_tokens=2048,
     max_concurrent=2,
     max_output_tokens=4096,
 )

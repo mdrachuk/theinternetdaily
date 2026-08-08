@@ -14,16 +14,28 @@ model's context window.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, replace
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
 
+log = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class BatchLimits:
     """How much work one call to this backend can carry.
+
+    `rewrite_output_tokens` is the budget for *one* article; the rewrite stage
+    multiplies it by the batch size. Rewriting is close to 1:1, so it has to be
+    at least as large as the input — a reply that runs out of budget mid-string
+    is unparseable, and the article silently stays pending while the next run
+    repeats the same expensive call.
+
+    `max_output_tokens` is the hard per-request ceiling, so an oversized ask is
+    clamped rather than rejected by the server.
 
     `max_concurrent` is the app-side default for in-flight batches. For vLLM it
     should match `--max-num-seqs`: the server does its own continuous batching,
@@ -33,6 +45,7 @@ class BatchLimits:
     summarize_max_chars: int
     rewrite_batch: int
     rewrite_max_chars: int
+    rewrite_output_tokens: int
     max_concurrent: int
     max_output_tokens: int
 
@@ -86,8 +99,11 @@ ANTHROPIC_LIMITS = BatchLimits(
     summarize_max_chars=4000,
     rewrite_batch=8,
     rewrite_max_chars=16000,
+    rewrite_output_tokens=4096,
     max_concurrent=6,
-    max_output_tokens=8192,
+    # 8 x 4096: Haiku's own output limit is far higher, so the ceiling only
+    # exists to keep a mistake from turning into a 64k request.
+    max_output_tokens=32768,
 )
 
 
@@ -146,17 +162,22 @@ class AnthropicBackend:
 
 # --- vLLM (OpenAI-compatible) --------------------------------------------
 
-# Sized for google/gemma-3-12b-it in FP8 on a 20 GB card with
-# --max-model-len 16384: ~12 GB of weights leaves ~6-7 GB of KV cache, which is
-# what forces small batches. Rewrite batches of 1 keep one bad reply from
-# taking several articles down with it.
+# Sized for a 12B model on a 20 GB card with --max-model-len 16384. Rewrite
+# batches of 1 keep one bad reply from taking several articles down with it.
+#
+# max_output_tokens is the number that bit us: rewriting is close to 1:1, so
+# 12 000 input chars (~3 000 tokens) needs at least that many tokens back, and
+# JSON escaping adds more. At 4096 the longest articles were truncated
+# mid-string and the whole reply became unparseable. 8192 leaves the request
+# well inside a 16k window (~700 system + ~3 000 article + 8 192 output).
 VLLM_LIMITS = BatchLimits(
     summarize_batch=4,
     summarize_max_chars=3000,
     rewrite_batch=1,
     rewrite_max_chars=12000,
+    rewrite_output_tokens=8192,
     max_concurrent=4,
-    max_output_tokens=4096,
+    max_output_tokens=8192,
 )
 
 
@@ -235,6 +256,7 @@ class VLLMBackend:
             }
 
         parts: list[str] = []
+        finish_reason: str | None = None
         client = self._get_client()
         async with client.stream(
             "POST", f"{self.base_url}/chat/completions", json=payload
@@ -258,6 +280,18 @@ class VLLMBackend:
                     piece = (choice.get("delta") or {}).get("content")
                     if piece:
                         parts.append(piece)
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+        if finish_reason == "length":
+            # Worth saying out loud: a truncated reply is usually unparseable,
+            # so the article silently stays pending and the next run repeats
+            # the same expensive call with the same result.
+            log.warning(
+                "vllm reply hit the %d-token output cap (finish_reason=length); "
+                "the batch protocol will not parse. Lower the stage's input "
+                "limit or raise max_output_tokens.",
+                min(max_tokens, self.limits.max_output_tokens),
+            )
         return "".join(parts)
 
     async def aclose(self) -> None:
@@ -275,8 +309,9 @@ OLLAMA_LIMITS = BatchLimits(
     summarize_max_chars=2500,
     rewrite_batch=1,
     rewrite_max_chars=8000,
+    rewrite_output_tokens=6144,
     max_concurrent=1,
-    max_output_tokens=4096,
+    max_output_tokens=6144,
 )
 
 

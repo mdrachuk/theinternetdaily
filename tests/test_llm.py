@@ -14,6 +14,7 @@ import pytest
 
 from papernews.llm import (
     ANTHROPIC_LIMITS,
+    OLLAMA_LIMITS,
     VLLM_LIMITS,
     AnthropicBackend,
     LLMBackend,
@@ -167,3 +168,45 @@ async def test_ollama_streams_ndjson_and_records_usage():
     backend = OllamaBackend(client=_vllm_client(handler))
     assert await backend.chat("sys", "user", max_tokens=10) == "one two"
     assert backend.usage.output_tokens == 3
+
+
+# --- output budgets -------------------------------------------------------
+
+async def test_rewrite_asks_for_a_per_article_budget_from_the_backend():
+    """The concrete failure this pins: a flat 4096-token ask truncated the
+    longest articles mid-reply, and a truncated batch protocol parses to
+    nothing — so the article silently stayed pending forever."""
+    from papernews.rewrite import rewrite_batch
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, content=_sse(
+            {"choices": [{"delta": {"content": '{"articles":[]}'}}]}
+        ))
+
+    backend = VLLMBackend(client=_vllm_client(handler))
+    await rewrite_batch(backend, [("t", "body")])
+    assert seen["max_tokens"] == VLLM_LIMITS.rewrite_output_tokens
+
+
+def test_every_backend_can_return_at_least_as_much_as_it_is_fed():
+    """Rewriting is ~1:1, so the per-article output budget must cover the
+    per-article input. Roughly 4 chars per token."""
+    for limits in (ANTHROPIC_LIMITS, VLLM_LIMITS, OLLAMA_LIMITS):
+        assert limits.rewrite_output_tokens >= limits.rewrite_max_chars / 4
+        assert limits.max_output_tokens >= limits.rewrite_output_tokens
+
+
+async def test_a_truncated_reply_is_reported_not_swallowed(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_sse(
+            {"choices": [{"delta": {"content": '{"articles": [{"id": 0, "bo'}}]},
+            {"choices": [{"delta": {}, "finish_reason": "length"}]},
+        ))
+
+    backend = VLLMBackend(client=_vllm_client(handler))
+    with caplog.at_level("WARNING"):
+        await backend.chat("sys", "user", max_tokens=64)
+    assert "output cap" in caplog.text

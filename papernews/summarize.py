@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Sequence
 
 from .llm import LLMBackend
+from .protocol import parse_json_batch
 
 _SYSTEM = (
     "You write a 2-sentence summary of a piece of content for a daily digest.\n"
@@ -59,37 +59,6 @@ SUMMARY_SCHEMA = {
 _LINE_RE = re.compile(r"^\s*(\d+)\s*[.)]\s*(.*\S)\s*$")
 
 
-def _parse_json(text: str, n: int) -> list[str] | None:
-    """Read the JSON protocol. Returns None if the reply isn't JSON at all, so
-    the caller can fall back to the line format."""
-    blob = text.strip()
-    if not blob.startswith("{"):
-        # A model that wrapped the JSON in prose or a fence: take the outermost
-        # braces and try that.
-        start, end = blob.find("{"), blob.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        blob = blob[start:end + 1]
-    try:
-        data = json.loads(blob)
-    except ValueError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    out = [""] * n
-    for item in data.get("summaries") or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            idx = int(item.get("id"))
-        except (TypeError, ValueError):
-            continue
-        summary = item.get("summary")
-        if 0 <= idx < n and isinstance(summary, str):
-            out[idx] = summary.strip()
-    return out
-
-
 def parse_summaries(text: str, n: int) -> list[str]:
     """Parse a batch reply into n summaries, JSON first, numbered lines second.
 
@@ -97,7 +66,7 @@ def parse_summaries(text: str, n: int) -> list[str]:
     to label comes back as an empty string, which the caller counts as an error
     and leaves pending for the next run.
     """
-    parsed = _parse_json(text, n)
+    parsed = parse_json_batch(text, "summaries", "summary", n)
     if parsed is not None and any(parsed):
         return parsed
     out = [""] * n
