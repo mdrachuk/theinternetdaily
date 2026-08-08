@@ -1,41 +1,44 @@
 """FastAPI web service for papernews.
 
 Routes:
-  GET /              landing page (cover preview + 'Read today' link)
-  GET /digest.pdf    current edition PDF (cached, built on demand)
-  GET /preview.png   page-1 PNG of the current edition
-  GET /sources       JSON list of configured sources + counts
-  GET /healthz       liveness probe
+  GET  /              landing page (cover preview + 'Read today' link)
+  GET  /digest.pdf    current edition PDF (cached, built on demand)
+  GET  /preview.png   page-1 PNG of the current edition
+  GET  /sources       JSON list of configured sources + counts
+  GET  /healthz       liveness probe
+  GET  /readyz        readiness probe (store + config)
+  POST /ingest        manual kick, via the job queue
 
 Background:
-  APScheduler (AsyncIOScheduler) runs `ingest` on a schedule.
+  APScheduler (AsyncIOScheduler) enqueues `ingest` on a schedule.
 
-Environment (read per call, never at import time):
-  PAPERNEWS_STATE        path to state.db          (default: state.db)
-  PAPERNEWS_CONFIG       path to sources.toml      (default: sources.toml)
-  PAPERNEWS_CACHE        path to cache dir         (default: archive/cache)
-  PAPERNEWS_WORKERS      LLM workers               (default: 8)
+Configuration is read from the environment per call by `papernews.config`;
+the work itself lives in `papernews.jobs`, so an arq worker runs exactly the
+same code without importing this module.
+
+Environment:
+  PAPERNEWS_STATE   SQLite path (default: state.db)
+  PAPERNEWS_STORE   store URL; overrides PAPERNEWS_STATE (e.g. mongodb://…)
+  PAPERNEWS_QUEUE   queue URL; unset = in-process (e.g. redis://redis:6379)
+  PAPERNEWS_CONFIG  sources.toml path
+  PAPERNEWS_CACHE   cache dir
+  PAPERNEWS_WORKERS concurrent LLM batches
 
   Scheduling — pick one:
-    INGEST_INTERVAL_SECONDS    every N seconds         (default: 14400 = 4h)
-    INGEST_SCHEDULE            "HH:MM,HH:MM,..." cron-style fixed times
-    INGEST_TIMEZONE            IANA tz, used with INGEST_SCHEDULE (default: UTC)
+    INGEST_INTERVAL_SECONDS  every N seconds (default: 14400 = 4h)
+    INGEST_SCHEDULE          "HH:MM,HH:MM,…" cron-style fixed times
+    INGEST_TIMEZONE          IANA tz, used with INGEST_SCHEDULE (default: UTC)
 
   Post-ingest delivery hook:
-    POST_INGEST_HOOK           executable on disk; receives the PDF path as $1
-    POST_INGEST_HOOK_TIMEOUT   seconds (default: 300)
-
-  ANTHROPIC_API_KEY      required for the Anthropic backend
+    POST_INGEST_HOOK          executable on disk; receives the PDF path as $1
+    POST_INGEST_HOOK_TIMEOUT  seconds (default: 300)
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import sys
-import tomllib
 from contextlib import asynccontextmanager
 from datetime import date
-from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
@@ -46,153 +49,14 @@ from fastapi.responses import (
     PlainTextResponse,
 )
 
-from .cache import edition_key, ensure_dir, pdf_path, preview_path
-from .cli import cmd_ingest, collect_current_edition, gather_decorations
-from .http import client_context
-from .preview import render_cover_png
-from .render import build_pdf
-from .store import Store
-
-
-# --- Config helpers -------------------------------------------------------
-#
-# Read the environment when a request or job actually needs it. Import-time
-# constants make the module impossible to reconfigure from a test or from a
-# downstream library consumer.
-
-def _env_path(var: str, default: str) -> Path:
-    return Path(os.environ.get(var, default))
-
-
-def state_path() -> Path:
-    return _env_path("PAPERNEWS_STATE", "state.db")
-
-
-def config_path() -> Path:
-    return _env_path("PAPERNEWS_CONFIG", "sources.toml")
-
-
-def cache_dir() -> Path:
-    return _env_path("PAPERNEWS_CACHE", "archive/cache")
-
-
-def workers() -> int:
-    return int(os.environ.get("PAPERNEWS_WORKERS", "8"))
-
-
-def _load_sources() -> list[dict]:
-    with open(config_path(), "rb") as f:
-        return tomllib.load(f).get("source", [])
-
-
-# --- Build pipeline -------------------------------------------------------
-
-# Per-key lock so concurrent requests for the same cache key only build once.
-_build_locks: dict[str, asyncio.Lock] = {}
-
-
-def _lock_for(key: str) -> asyncio.Lock:
-    lock = _build_locks.get(key)
-    if lock is None:
-        # Safe without a guard: the event loop never preempts between the get
-        # and the set, so two coroutines cannot both miss and both insert.
-        lock = asyncio.Lock()
-        _build_locks[key] = lock
-    return lock
-
-
-def _current_key(store: Store, sources: list[dict]) -> str:
-    return edition_key(store.max_fetched_at(), sources)
-
-
-async def _build_pdf_for_key(key: str, store: Store, sources: list[dict]) -> Path:
-    """Build the current-edition PDF into the cache, keyed by `key`."""
-    cache = cache_dir()
-    out = pdf_path(cache, key)
-    if out.exists():
-        return out
-    async with _lock_for(key):
-        if out.exists():
-            return out
-        ensure_dir(cache)
-        articles = collect_current_edition(store, sources)
-        async with client_context() as client:
-            decorations = await gather_decorations(client)
-        # Use the cache dir as build workdir so .build/ stays beside the PDF.
-        tmp_pdf = await build_pdf(
-            date.today().isoformat(),
-            articles,
-            cache,
-            decorations=decorations,
-        )
-        if tmp_pdf != out:
-            tmp_pdf.replace(out)
-    return out
-
-
-async def _build_preview_for_key(key: str, pdf: Path) -> Path:
-    out = preview_path(cache_dir(), key)
-    if out.exists():
-        return out
-    async with _lock_for(f"preview:{key}"):
-        if out.exists():
-            return out
-        await render_cover_png(pdf, out, dpi=180)
-    return out
-
-
-# --- Background ingest ----------------------------------------------------
-
-_ingest_lock = asyncio.Lock()
-
-
-def ingest_running() -> bool:
-    return _ingest_lock.locked()
-
-
-async def _run_hook(hook: str, pdf: Path) -> None:
-    """Run the post-ingest delivery hook with the PDF path as $1."""
-    timeout = float(os.environ.get("POST_INGEST_HOOK_TIMEOUT", "300"))
-    proc = await asyncio.create_subprocess_exec(
-        hook, str(pdf),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise RuntimeError(f"hook timed out after {timeout:.0f}s")
-
-
-async def do_ingest() -> None:
-    if _ingest_lock.locked():
-        return  # one ingest at a time
-    async with _ingest_lock:
-        sources = _load_sources()
-        store = Store(state_path())
-        async with client_context() as client:
-            await cmd_ingest(client, store, sources, workers())
-
-        # Optional post-ingest delivery hook. The hook is an executable on the
-        # container's filesystem (usually dropped in via the bind volume) that
-        # receives the freshly-built PDF path as its single argument. Useful
-        # for SCP-ing to a reMarkable, mailing it somewhere, printing, etc.
-        hook = os.environ.get("POST_INGEST_HOOK", "").strip()
-        if hook:
-            try:
-                key = _current_key(store, sources)
-                pdf = await _build_pdf_for_key(key, store, sources)
-                await _run_hook(hook, pdf)
-            except Exception as e:
-                sys.stderr.write(f"[post-ingest hook] {e}\n")
-                sys.stderr.flush()
+from . import config, jobs
+from .queue import open_queue
+from .store import open_store
 
 
 # --- Scheduler ------------------------------------------------------------
 
-def start_scheduler(job=do_ingest) -> AsyncIOScheduler:
+def start_scheduler(job) -> AsyncIOScheduler:
     """Start the background ingest scheduler on the running event loop.
 
     Two modes (in priority order):
@@ -234,17 +98,26 @@ async def _lifespan(app: FastAPI):
     not start it — that is what made the old Flask version untestable."""
     app.state.scheduler = None
     if os.environ.get("PAPERNEWS_NO_SCHED") != "1":
-        app.state.scheduler = start_scheduler()
+        async def _enqueue_ingest() -> None:
+            await app.state.queue.enqueue("ingest", job_id="ingest")
+
+        app.state.scheduler = start_scheduler(_enqueue_ingest)
     try:
         yield
     finally:
         if app.state.scheduler is not None:
             app.state.scheduler.shutdown(wait=False)
+        await app.state.queue.close()
 
 
-def create_app() -> FastAPI:
+def create_app(queue=None) -> FastAPI:
     app = FastAPI(title="papernews", docs_url=None, redoc_url=None,
                   lifespan=_lifespan)
+    # concurrency=1: the LLM stages and xelatex are the bottleneck, so a second
+    # concurrent ingest would only contend for them.
+    app.state.queue = queue if queue is not None else open_queue(
+        config.queue_url(), jobs=jobs.JOBS, concurrency=1
+    )
 
     @app.get("/healthz", response_class=PlainTextResponse)
     async def healthz() -> str:
@@ -255,14 +128,17 @@ def create_app() -> FastAPI:
         """Readiness: the store must answer and the config must parse."""
         checks: dict[str, str] = {}
         status = 200
+        store = open_store(config.store_url())
         try:
-            Store(state_path()).counts()
+            await store.counts()
             checks["store"] = "ok"
         except Exception as e:
             checks["store"] = f"error: {e}"
             status = 503
+        finally:
+            await store.close()
         try:
-            _load_sources()
+            config.load_sources()
             checks["config"] = "ok"
         except Exception as e:
             checks["config"] = f"error: {e}"
@@ -275,22 +151,23 @@ def create_app() -> FastAPI:
 
     @app.get("/sources")
     async def sources_endpoint():
-        sources = _load_sources()
-        store = Store(state_path())
-        return {
-            "sources": [
-                {"name": s["name"], "kind": s.get("kind"), "limit": s.get("limit")}
-                for s in sources
-            ],
-            "max_fetched_at": store.max_fetched_at(),
-        }
+        sources = config.load_sources()
+        store = open_store(config.store_url())
+        try:
+            return {
+                "sources": [
+                    {"name": s["name"], "kind": s.get("kind"),
+                     "limit": s.get("limit")}
+                    for s in sources
+                ],
+                "max_fetched_at": await store.max_fetched_at(),
+            }
+        finally:
+            await store.close()
 
     @app.get("/digest.pdf")
     async def digest_pdf():
-        sources = _load_sources()
-        store = Store(state_path())
-        key = _current_key(store, sources)
-        pdf = await _build_pdf_for_key(key, store, sources)
+        pdf = await _current_pdf()
         return FileResponse(
             pdf,
             media_type="application/pdf",
@@ -301,11 +178,8 @@ def create_app() -> FastAPI:
 
     @app.get("/preview.png")
     async def preview_png():
-        sources = _load_sources()
-        store = Store(state_path())
-        key = _current_key(store, sources)
-        pdf = await _build_pdf_for_key(key, store, sources)
-        png = await _build_preview_for_key(key, pdf)
+        pdf, key = await _current_pdf(with_key=True)
+        png = await jobs.build_preview_for_key(key, pdf)
         return FileResponse(
             png,
             media_type="image/png",
@@ -314,12 +188,12 @@ def create_app() -> FastAPI:
 
     @app.post("/ingest")
     async def trigger_ingest():
-        # Optional manual kick; for cron-style external triggers.
-        if ingest_running():
+        # Optional manual kick; for cron-style external triggers. It goes
+        # through the queue, so a Redis-backed deployment runs it on a worker
+        # instead of in the web process — same call either way.
+        if jobs.ingest_running():
             return JSONResponse({"status": "already running"}, status_code=202)
-        # Fire and forget: the caller gets 202 and the run continues on the
-        # loop. Keep a reference so the task isn't garbage collected midway.
-        app.state.ingest_task = asyncio.create_task(do_ingest())
+        await app.state.queue.enqueue("ingest", job_id="ingest")
         return JSONResponse({"status": "started"}, status_code=202)
 
     @app.get("/ingest")
@@ -335,6 +209,18 @@ def create_app() -> FastAPI:
         )
 
     return app
+
+
+async def _current_pdf(with_key: bool = False):
+    """Resolve (and build if needed) the PDF for the current edition."""
+    sources = config.load_sources()
+    store = open_store(config.store_url())
+    try:
+        key = await jobs.current_key(store, sources)
+        pdf = await jobs.build_pdf_for_key(key, store, sources)
+    finally:
+        await store.close()
+    return (pdf, key) if with_key else pdf
 
 
 _LANDING_HTML = """<!doctype html>

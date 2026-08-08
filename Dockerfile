@@ -56,11 +56,14 @@ RUN uv python install 3.14
 # Dependencies first, from the lockfile, so the layer caches across source
 # edits. --frozen fails the build if uv.lock has drifted from pyproject.toml.
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-install-project --no-dev
+# --all-extras so the optional store/queue backends (pymongo, arq) are
+# present when a compose overlay switches to them. Both are small and the
+# defaults still touch neither.
+RUN uv sync --frozen --no-install-project --no-dev --all-extras
 
 COPY papernews ./papernews
 COPY sources.toml ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --all-extras
 
 # State + cache live on a mounted volume.
 RUN mkdir -p /data/archive/cache

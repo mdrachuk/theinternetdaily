@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
-import tomllib
 from datetime import date as date_cls, datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
 
+from . import config
 from .extract import extract
 from .fetch import RawItem, fetch_hn, fetch_rss, fetch_wikipedia_events
 from .http import client_context
 from .render import build_pdf
-from .store import Store
+from .store import ArticleRow, Store, open_store
 from .wiki import (
     fetch_did_you_know,
     fetch_quote_of_day,
@@ -28,9 +29,7 @@ def _log(msg: str) -> None:
 
 
 def _load_sources(path: Path) -> list[dict]:
-    with open(path, "rb") as f:
-        cfg = tomllib.load(f)
-    return cfg.get("source", [])
+    return config.load_sources(path)
 
 
 # Network-bound article extraction: many in flight is fine, but not unbounded
@@ -96,10 +95,10 @@ async def cmd_gather(
 
         todo: list[RawItem] = []
         for it in items:
-            if store.exists(it.url, it.title):
+            if await store.exists(it.url, it.title):
                 # Back-fill the surfacing date on a re-gather, even if the
                 # row already exists.
-                store.insert_raw(
+                await store.insert_raw(
                     it.source, it.url, it.title,
                     text=None, surfaced=it.surfaced,
                 )
@@ -112,7 +111,7 @@ async def cmd_gather(
         for it, res in zip(todo, results):
             if isinstance(res, BaseException):
                 _log(f"  [error] extract: {it.title[:60]}: {res}")
-                store.insert_raw(
+                await store.insert_raw(
                     it.source, it.url, it.title,
                     text=None, surfaced=it.surfaced,
                 )
@@ -120,7 +119,7 @@ async def cmd_gather(
                 continue
             _, art = res
             if art is None:
-                store.insert_raw(
+                await store.insert_raw(
                     it.source, it.url, it.title,
                     text=None, surfaced=it.surfaced,
                 )
@@ -129,7 +128,7 @@ async def cmd_gather(
             else:
                 # Prefer the article's own date; fall back to the surfacing
                 # date so we always have something to display.
-                store.insert_raw(
+                await store.insert_raw(
                     it.source, it.url, it.title,
                     text=art.text,
                     surfaced=it.surfaced,
@@ -150,7 +149,7 @@ def _chunks(seq: list, n: int) -> list[list]:
 
 async def _run_llm_stage(
     stage: str,
-    pending: list,
+    pending: list[ArticleRow],
     batch_fn,
     apply_fn,
     workers: int,
@@ -164,10 +163,10 @@ async def _run_llm_stage(
          f"of {batch_size} (workers={workers})")
     sem = asyncio.Semaphore(workers)
 
-    async def _one(rows: list) -> list[tuple[str, str]]:
+    async def _one(rows: list[ArticleRow]) -> list[tuple[str, str]]:
         async with sem:
-            out = await batch_fn([(r["title"], r["text"]) for r in rows])
-        return [(rows[i]["url_hash"], out[i]) for i in range(len(rows))]
+            out = await batch_fn([(r.title, r.text or "") for r in rows])
+        return [(rows[i].id, out[i]) for i in range(len(rows))]
 
     done = 0
     errors = 0
@@ -181,7 +180,7 @@ async def _run_llm_stage(
             continue
         for h, value in res:
             if value:
-                apply_fn(h, value)
+                await apply_fn(h, value)
                 done += 1
             else:
                 errors += 1
@@ -193,7 +192,7 @@ async def _run_llm_stage(
 async def cmd_summarize(store: Store, workers: int) -> int:
     from .summarize import summarize_batch
 
-    pending = store.pending_summary()
+    pending = await store.pending_summary()
     if not pending:
         _log("[summarize] nothing pending")
         return 0
@@ -205,7 +204,7 @@ async def cmd_summarize(store: Store, workers: int) -> int:
 async def cmd_rewrite(store: Store, workers: int) -> int:
     from .rewrite import rewrite_batch
 
-    pending = store.pending_rewrite()
+    pending = await store.pending_rewrite()
     if not pending:
         _log("[rewrite] nothing pending")
         return 0
@@ -252,7 +251,7 @@ async def gather_decorations(client: httpx.AsyncClient) -> dict:
     return decorations
 
 
-def collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
+async def collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
     """Pick the latest N articles per source (N = source.limit), in source
     config order. Returns render-ready dicts."""
     out: list[dict] = []
@@ -275,15 +274,15 @@ def collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
             .date().isoformat()
             if since_hours is not None else None
         )
-        rows = store.latest_per_source(name, limit, since_date=since_date)
+        rows = await store.latest_per_source(name, limit, since_date=since_date)
         for r in rows:
             out.append({
-                "source": r["source"],
-                "url": r["url"],
-                "title": r["title"],
-                "text": r["body"] if r["body"] else r["text"],
-                "summary": r["summary"],
-                "date": _format_date(r["published"] or r["surfaced"]),
+                "source": r.source,
+                "url": r.url,
+                "title": r.title,
+                "text": r.body or r.text,
+                "summary": r.summary,
+                "date": _format_date(r.published or r.surfaced),
             })
     return out
 
@@ -300,7 +299,7 @@ async def cmd_render(
     No time-window filter, no read state. PDF reflects whatever is currently
     in the store at this moment.
     """
-    articles = collect_current_edition(store, sources)
+    articles = await collect_current_edition(store, sources)
     if not articles:
         _log("[render] no ready articles in store yet")
         return 0
@@ -329,8 +328,8 @@ async def cmd_ingest(
     return await cmd_rewrite(store, workers)
 
 
-def cmd_status(store: Store) -> int:
-    c = store.counts()
+async def cmd_status(store: Store) -> int:
+    c = await store.counts()
     print(f"total articles         : {c['total']}")
     print(f"  unreadable           : {c['unreadable']}")
     print(f"  awaiting summary     : {c['pending_summary']}")
@@ -340,13 +339,41 @@ def cmd_status(store: Store) -> int:
     return 0
 
 
+async def cmd_migrate(src_url: str, dst_url: str, batch: int = 500) -> int:
+    """Copy every article from one store to another, through the protocol.
+
+    Store-to-store rather than dump-and-load, so it works for any pair of
+    backends — including a downstream's own implementation.
+    """
+    src = open_store(src_url)
+    dst = open_store(dst_url)
+    try:
+        rows = await src.all_rows()
+        _log(f"[migrate] {len(rows)} rows: {src_url} -> {dst_url}")
+        copied = 0
+        for chunk in _chunks(rows, batch):
+            copied += await dst.upsert_rows(chunk)
+            _log(f"  … {copied}/{len(rows)}")
+        counts = await dst.counts()
+        _log(f"[migrate] done; target now holds {counts['total']} articles")
+    finally:
+        await src.close()
+        await dst.close()
+    return 0
+
+
 # --- CLI --------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="papernews")
     p.add_argument("--config", type=Path, default=Path("sources.toml"))
     p.add_argument("--out",    type=Path, default=Path("archive"))
-    p.add_argument("--state",  type=Path, default=Path("state.db"))
+    p.add_argument("--state",  type=Path, default=Path("state.db"),
+                   help="SQLite file (shorthand for --store)")
+    p.add_argument("--store", default=None,
+                   help="store URL, e.g. state.db or "
+                        "mongodb://localhost:27017/papernews "
+                        "(default: PAPERNEWS_STORE, else --state)")
 
     sub = p.add_subparsers(dest="cmd")
 
@@ -366,15 +393,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="print store counts")
 
+    sp_mig = sub.add_parser(
+        "migrate", help="copy articles between two stores")
+    sp_mig.add_argument("--from", dest="src", required=True,
+                        help="source store URL (e.g. state.db)")
+    sp_mig.add_argument("--to", dest="dst", required=True,
+                        help="target store URL (e.g. mongodb://localhost/papernews)")
+
     sp_b = sub.add_parser("build", help="ingest + render (default)")
     sp_b.add_argument("--workers", type=int, default=6)
     sp_b.add_argument("--date",    default=date_cls.today().isoformat())
     return p
 
 
+def store_url(args) -> str:
+    """Resolve the store URL: --store, then PAPERNEWS_STORE, then --state."""
+    return args.store or os.environ.get("PAPERNEWS_STORE") or str(args.state)
+
+
 async def _main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     cmd = args.cmd or "build"
+
+    if cmd == "migrate":
+        return await cmd_migrate(args.src, args.dst)
 
     if not args.config.exists():
         _log(f"[fatal] config not found: {args.config}")
@@ -386,28 +428,30 @@ async def _main(argv: list[str] | None = None) -> int:
         _log("[fatal] no sources configured")
         return 2
 
-    store = Store(args.state)
+    store = open_store(store_url(args))
+    try:
+        if cmd == "status":
+            return await cmd_status(store)
 
-    if cmd == "status":
-        return cmd_status(store)
-
-    # One client for the whole run, closed on the way out.
-    async with client_context() as client:
-        if cmd == "gather":
-            return await cmd_gather(client, store, sources)
-        if cmd == "summarize":
-            return await cmd_summarize(store, args.workers)
-        if cmd == "rewrite":
-            return await cmd_rewrite(store, args.workers)
-        if cmd == "ingest":
-            return await cmd_ingest(client, store, sources, args.workers)
-        if cmd == "render":
-            return await cmd_render(client, store, args.date, args.out, sources)
-        if cmd == "build":
-            rc = await cmd_ingest(client, store, sources, args.workers)
-            if rc:
-                return rc
-            return await cmd_render(client, store, args.date, args.out, sources)
+        # One client for the whole run, closed on the way out.
+        async with client_context() as client:
+            if cmd == "gather":
+                return await cmd_gather(client, store, sources)
+            if cmd == "summarize":
+                return await cmd_summarize(store, args.workers)
+            if cmd == "rewrite":
+                return await cmd_rewrite(store, args.workers)
+            if cmd == "ingest":
+                return await cmd_ingest(client, store, sources, args.workers)
+            if cmd == "render":
+                return await cmd_render(client, store, args.date, args.out, sources)
+            if cmd == "build":
+                rc = await cmd_ingest(client, store, sources, args.workers)
+                if rc:
+                    return rc
+                return await cmd_render(client, store, args.date, args.out, sources)
+    finally:
+        await store.close()
 
     _log(f"[fatal] unknown command: {cmd}")
     return 2

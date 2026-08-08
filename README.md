@@ -164,6 +164,44 @@ CPU inference works but is slow. A discrete GPU with ROCm (AMD) or CUDA
 (NVIDIA) support makes a significant difference. Set `PAPERNEWS_WORKERS=1`
 when running on CPU to avoid hammering Ollama with concurrent requests.
 
+## Storage and job queues
+
+Both are pluggable, and both default to **nothing extra to run**:
+
+| | default | optional |
+|---|---|---|
+| storage | SQLite file (`PAPERNEWS_STATE`) | MongoDB — `papernews[mongo]` |
+| jobs | in-process asyncio queue | Redis + arq workers — `papernews[redis]` |
+
+Switch either with a URL:
+
+```bash
+# .env
+PAPERNEWS_STORE=mongodb://mongo:27017/papernews
+PAPERNEWS_QUEUE=redis://redis:6379
+```
+
+and bring up the matching overlay so the service exists:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mongo.yml up
+docker compose -f docker-compose.yml -f docker-compose.redis.yml up
+```
+
+The plain `docker compose up` remains a single container.
+
+Moving between backends is a store-to-store copy through the protocol, so it
+works for any pair:
+
+```bash
+uv run papernews migrate --from state.db --to mongodb://localhost:27017/papernews
+```
+
+The Redis overlay also starts an `arq` worker. That is worth understanding
+even as a single user: with a queue, the web process only *enqueues* work and a
+separate process with `PAPERNEWS_MAX_JOBS` runs it — a process-level cap is the
+only thing that genuinely bounds how many LLM jobs hit one GPU at a time.
+
 ## What it produces
 
 A 100–200 page PDF with:
@@ -512,7 +550,17 @@ papernews/
 │   ├── summarize.py      # summarization prompts + batching
 │   ├── rewrite.py        # rewrite prompts + batching
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
-│   ├── store.py          # SQLite article store + queries
+│   ├── config.py         # env-derived configuration (read per call)
+│   ├── jobs.py           # units of work a queue can run
+│   ├── worker.py         # arq worker entry point (optional)
+│   ├── store/            # storage protocol + backends
+│   │   ├── base.py       #   Store protocol + ArticleRow
+│   │   ├── sqlite.py     #   default backend, no extra services
+│   │   └── mongo.py      #   optional: papernews[mongo]
+│   ├── queue/            # job queue protocol + backends
+│   │   ├── base.py       #   JobQueue protocol
+│   │   ├── local.py      #   default: in-process asyncio
+│   │   └── arq_queue.py  #   optional: papernews[redis]
 │   ├── render.py         # Jinja + xelatex
 │   ├── preview.py        # PDF → PNG via pdftoppm
 │   ├── cache.py          # On-disk cache by content hash
@@ -523,6 +571,8 @@ papernews/
 ├── pyproject.toml
 ├── Dockerfile
 ├── docker-compose.yml
+├── docker-compose.mongo.yml  # optional MongoDB overlay
+├── docker-compose.redis.yml  # optional Redis + arq worker overlay
 └── data/                 # gitignored — your SQLite + cached PDFs
 ```
 

@@ -19,14 +19,13 @@ from __future__ import annotations
 import json
 import os
 import time
-from pathlib import Path
 from unittest import mock
 
 import httpx
 import pytest
 
 from papernews.cache import edition_key
-from papernews.store import Store
+from papernews.store import url_hash
 
 
 def _struct_hours_ago(hours: float) -> time.struct_time:
@@ -126,69 +125,67 @@ async def test_cutoff_is_utc_not_local_time():
 
 
 # --- 2: render-time filtering ---------------------------------------------
+#
+# The `store` fixture is parametrized across backends (tests/conftest.py), so
+# the window rule is pinned for SQLite and Mongo alike. Broader store contract
+# tests live in tests/test_store.py.
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> Store:
-    return Store(tmp_path / "state.db")
-
-
-def _add(store: Store, title, published=None, surfaced=None, ready=True):
+async def _add(store, title, published=None, surfaced=None, ready=True):
     url = f"http://example.invalid/{title}"
-    store.insert_raw(
+    await store.insert_raw(
         "Src", url, title, text="body text",
         surfaced=surfaced, published=published,
     )
     if ready:
-        from papernews.store import url_hash
-        store.set_summary(url_hash(url), "a summary")
+        await store.set_summary(url_hash(url), "a summary")
 
 
-def _titles(store: Store, **kwargs):
-    return [r["title"] for r in store.latest_per_source("Src", 10, **kwargs)]
+async def _titles(store, **kwargs):
+    return [r.title for r in await store.latest_per_source("Src", 10, **kwargs)]
 
 
-def test_without_since_date_returns_all_ready_rows(store):
-    _add(store, "old", published="2020-01-01")
-    _add(store, "new", published="2030-01-01")
-    assert sorted(_titles(store)) == ["new", "old"]
+async def test_without_since_date_returns_all_ready_rows(store):
+    await _add(store, "old", published="2020-01-01")
+    await _add(store, "new", published="2030-01-01")
+    assert sorted(await _titles(store)) == ["new", "old"]
 
 
-def test_since_date_excludes_older_articles(store):
-    _add(store, "old", published="2020-01-01")
-    _add(store, "new", published="2030-01-01")
-    assert _titles(store, since_date="2025-01-01") == ["new"]
+async def test_since_date_excludes_older_articles(store):
+    await _add(store, "old", published="2020-01-01")
+    await _add(store, "new", published="2030-01-01")
+    assert await _titles(store, since_date="2025-01-01") == ["new"]
 
 
-def test_since_date_is_inclusive_of_the_boundary(store):
-    _add(store, "boundary", published="2025-01-01")
-    assert _titles(store, since_date="2025-01-01") == ["boundary"]
+async def test_since_date_is_inclusive_of_the_boundary(store):
+    await _add(store, "boundary", published="2025-01-01")
+    assert await _titles(store, since_date="2025-01-01") == ["boundary"]
 
 
-def test_falls_back_to_surfaced_when_published_is_null(store):
-    _add(store, "surfaced-only", surfaced="2030-01-01")
-    _add(store, "stale-surfaced", surfaced="2020-01-01")
-    assert _titles(store, since_date="2025-01-01") == ["surfaced-only"]
+async def test_falls_back_to_surfaced_when_published_is_null(store):
+    await _add(store, "surfaced-only", surfaced="2030-01-01")
+    await _add(store, "stale-surfaced", surfaced="2020-01-01")
+    assert await _titles(store, since_date="2025-01-01") == ["surfaced-only"]
 
 
-def test_undated_articles_are_kept(store):
+async def test_undated_articles_are_kept(store):
     """Mirrors the gather-time rule so the two layers agree."""
-    _add(store, "undated")
-    assert _titles(store, since_date="2025-01-01") == ["undated"]
+    await _add(store, "undated")
+    assert await _titles(store, since_date="2025-01-01") == ["undated"]
 
 
-def test_unsummarized_rows_are_still_excluded(store):
-    _add(store, "not-ready", published="2030-01-01", ready=False)
-    assert _titles(store, since_date="2025-01-01") == []
+async def test_unsummarized_rows_are_still_excluded(store):
+    await _add(store, "not-ready", published="2030-01-01", ready=False)
+    assert await _titles(store, since_date="2025-01-01") == []
 
 
-def test_limit_still_applies_with_since_date(store):
+async def test_limit_still_applies_with_since_date(store):
     for i in range(5):
-        _add(store, f"a{i}", published=f"2030-01-0{i + 1}")
-    rows = store.latest_per_source("Src", 2, since_date="2025-01-01")
+        await _add(store, f"a{i}", published=f"2030-01-0{i + 1}")
+    rows = await store.latest_per_source("Src", 2, since_date="2025-01-01")
     assert len(rows) == 2
     # newest first
-    assert [r["title"] for r in rows] == ["a4", "a3"]
+    assert [r.title for r in rows] == ["a4", "a3"]
 
 
 # --- 3: the cache key has to notice since_hours ---------------------------

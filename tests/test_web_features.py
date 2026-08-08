@@ -21,6 +21,7 @@ from unittest import mock
 import httpx
 import pytest
 
+import papernews.jobs as jobs
 import papernews.web as web
 
 
@@ -60,7 +61,7 @@ async def client():
 async def test_cron_schedule_creates_one_job_per_time(clean_env):
     os.environ["INGEST_SCHEDULE"] = "07:00,18:30"
     os.environ["INGEST_TIMEZONE"] = "Europe/London"
-    sched = web.start_scheduler(job=_noop)
+    sched = web.start_scheduler(_noop)
     try:
         jobs = sched.get_jobs()
         assert len(jobs) == 2
@@ -75,7 +76,7 @@ async def test_cron_schedule_creates_one_job_per_time(clean_env):
 
 async def test_cron_ignores_malformed_entries_but_keeps_valid_ones(clean_env):
     os.environ["INGEST_SCHEDULE"] = "07:00,not-a-time,18:00"
-    sched = web.start_scheduler(job=_noop)
+    sched = web.start_scheduler(_noop)
     try:
         assert len(sched.get_jobs()) == 2, "malformed entry must be skipped"
     finally:
@@ -84,7 +85,7 @@ async def test_cron_ignores_malformed_entries_but_keeps_valid_ones(clean_env):
 
 async def test_interval_fallback_when_no_schedule(clean_env):
     os.environ["INGEST_INTERVAL_SECONDS"] = "60"
-    sched = web.start_scheduler(job=_noop)
+    sched = web.start_scheduler(_noop)
     try:
         jobs = sched.get_jobs()
         assert len(jobs) == 1
@@ -127,13 +128,13 @@ def hook_env(tmp_path: Path):
 def _stubbed_ingest(fake_pdf: Path):
     """Bypass the real ingest work: no network, no LLM, no PDF build."""
     return (
-        mock.patch.object(web, "cmd_ingest", new=mock.AsyncMock(return_value=0)),
+        mock.patch.object(jobs, "cmd_ingest", new=mock.AsyncMock(return_value=0)),
         mock.patch.object(
-            web, "_build_pdf_for_key", new=mock.AsyncMock(return_value=fake_pdf)
+            jobs, "build_pdf_for_key", new=mock.AsyncMock(return_value=fake_pdf)
         ),
-        mock.patch.object(web, "_load_sources", return_value=[]),
-        mock.patch.object(web, "Store", return_value=mock.MagicMock()),
-        mock.patch.object(web, "_current_key", return_value="testkey"),
+        mock.patch.object(jobs.config, "load_sources", return_value=[]),
+        mock.patch.object(jobs, "open_store", return_value=mock.AsyncMock()),
+        mock.patch.object(jobs, "current_key", new=mock.AsyncMock(return_value="k")),
     )
 
 
@@ -145,7 +146,7 @@ async def test_hook_runs_with_pdf_path_after_successful_ingest(clean_env, hook_e
     for p in patches:
         p.start()
     try:
-        await web.do_ingest()
+        await jobs.ingest()
     finally:
         for p in patches:
             p.stop()
@@ -165,7 +166,7 @@ async def test_hook_failure_does_not_propagate(clean_env, hook_env):
     for p in patches:
         p.start()
     try:
-        await web.do_ingest()  # must not raise
+        await jobs.ingest()  # must not raise
     finally:
         for p in patches:
             p.stop()
@@ -176,12 +177,12 @@ async def test_no_hook_means_no_subprocess(clean_env, hook_env):
     os.environ.pop("POST_INGEST_HOOK", None)
 
     patches = _stubbed_ingest(fake_pdf)
-    run_hook = mock.patch.object(web, "_run_hook", new=mock.AsyncMock())
+    run_hook = mock.patch.object(jobs, "run_hook", new=mock.AsyncMock())
     for p in patches:
         p.start()
     mocked = run_hook.start()
     try:
-        await web.do_ingest()
+        await jobs.ingest()
         mocked.assert_not_awaited()
     finally:
         run_hook.stop()

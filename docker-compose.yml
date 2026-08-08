@@ -13,6 +13,11 @@ services:
       # extra_hosts entry below is what makes it work on Linux too.
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral}
+      # Storage and queue. Defaults: SQLite at /data/state.db and an
+      # in-process asyncio queue — no extra services. See
+      # docker-compose.mongo.yml / docker-compose.redis.yml to change either.
+      - PAPERNEWS_STORE=${PAPERNEWS_STORE:-}
+      - PAPERNEWS_QUEUE=${PAPERNEWS_QUEUE:-}
       - INGEST_INTERVAL_SECONDS=${INGEST_INTERVAL_SECONDS:-14400}
       - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
       # Hook to push the PDF to reMarkable after each ingest

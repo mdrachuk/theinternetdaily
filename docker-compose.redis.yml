@@ -1,0 +1,61 @@
+# Optional Redis + arq job queue.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.redis.yml up
+#
+# With this overlay the web process only *enqueues* work; the worker runs it.
+# That matters for one reason above all: a process-level job cap is the only
+# thing that actually bounds LLM concurrency. A semaphore inside the web
+# process cannot, once there is more than one process.
+#
+# PAPERNEWS_MAX_JOBS should match the LLM backend's own concurrency
+# (vLLM's --max-num-seqs). Plan step 8 splits this into per-queue workers.
+services:
+  papernews:
+    environment:
+      - PAPERNEWS_QUEUE=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: papernews:latest
+    build: .
+    container_name: papernews-worker
+    restart: unless-stopped
+    command: ["/opt/venv/bin/arq", "papernews.worker.WorkerSettings"]
+    environment:
+      - PAPERNEWS_QUEUE=redis://redis:6379
+      - PAPERNEWS_MAX_JOBS=${PAPERNEWS_MAX_JOBS:-1}
+      - PAPERNEWS_JOB_TIMEOUT=${PAPERNEWS_JOB_TIMEOUT:-3600}
+      - PAPERNEWS_STORE=${PAPERNEWS_STORE:-}
+      - LLM_BACKEND=${LLM_BACKEND:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://vllm:8000/v1}
+      - VLLM_MODEL=${VLLM_MODEL:-google/gemma-3-12b-it}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral}
+      - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
+      - POST_INGEST_HOOK=${POST_INGEST_HOOK:-}
+      - POST_INGEST_HOOK_TIMEOUT=${POST_INGEST_HOOK_TIMEOUT:-300}
+    volumes:
+      - ./data:/data
+      - ./sources.toml:/app/sources.toml:ro
+      - ${RMAPI_CONFIG:-${HOME}/.config/rmapi}:/root/.config/rmapi:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    container_name: papernews-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
