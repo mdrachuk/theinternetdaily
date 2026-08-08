@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 import tomllib
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as date_cls, datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
+
 from .extract import extract
-from .fetch import fetch_hn, fetch_rss, fetch_wikipedia_events
+from .fetch import RawItem, fetch_hn, fetch_rss, fetch_wikipedia_events
+from .http import client_context
 from .render import build_pdf
 from .store import Store
 from .wiki import (
@@ -30,42 +33,68 @@ def _load_sources(path: Path) -> list[dict]:
     return cfg.get("source", [])
 
 
+# Network-bound article extraction: many in flight is fine, but not unbounded
+# — trafilatura's parse runs in a thread and the pool is finite.
+FETCH_CONCURRENCY = 8
+
+
 # --- stages -----------------------------------------------------------------
 
-def cmd_gather(store: Store, sources: list[dict]) -> int:
+async def _fetch_source(
+    client: httpx.AsyncClient, src: dict
+) -> list[RawItem] | None:
+    """Resolve one source config to its raw items. None on failure."""
+    name = src["name"]
+    kind = src.get("kind", "rss")
+    limit = src.get("limit", 20)
+    try:
+        if kind == "hn":
+            return await fetch_hn(
+                client,
+                source_name=name,
+                limit=limit,
+                since_hours=int(src.get("since_hours", 48)),
+                min_points=int(src.get("min_points", 50)),
+            )
+        if kind == "rss":
+            since_hours = src.get("since_hours")
+            return await fetch_rss(
+                client, name, src["url"], limit=limit,
+                since_hours=int(since_hours) if since_hours is not None else None,
+            )
+        if kind == "wikipedia_events":
+            return await fetch_wikipedia_events(
+                source_name=name,
+                days_back=src.get("days_back", 1),
+            )
+        _log(f"  [warn] unknown source kind '{kind}'")
+        return None
+    except Exception as e:
+        _log(f"  [error] fetch failed: {e}")
+        return None
+
+
+async def cmd_gather(
+    client: httpx.AsyncClient,
+    store: Store,
+    sources: list[dict],
+    concurrency: int = FETCH_CONCURRENCY,
+) -> int:
     new_count = 0
     failed_count = 0
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _extract_one(it: RawItem):
+        async with sem:
+            return it, await extract(client, it.url, it.title, it.source)
+
     for src in sources:
-        name = src["name"]
-        kind = src.get("kind", "rss")
-        limit = src.get("limit", 20)
-        _log(f"[gather] {name}")
-        try:
-            if kind == "hn":
-                items = fetch_hn(
-                    source_name=name,
-                    limit=limit,
-                    since_hours=int(src.get("since_hours", 48)),
-                    min_points=int(src.get("min_points", 50)),
-                )
-            elif kind == "rss":
-                since_hours = src.get("since_hours")
-                items = fetch_rss(
-                    name, src["url"], limit=limit,
-                    since_hours=int(since_hours) if since_hours is not None else None,
-                )
-            elif kind == "wikipedia_events":
-                items = fetch_wikipedia_events(
-                    source_name=name,
-                    days_back=src.get("days_back", 1),
-                )
-            else:
-                _log(f"  [warn] unknown source kind '{kind}'")
-                continue
-        except Exception as e:
-            _log(f"  [error] fetch failed: {e}")
+        _log(f"[gather] {src['name']}")
+        items = await _fetch_source(client, src)
+        if items is None:
             continue
 
+        todo: list[RawItem] = []
         for it in items:
             if store.exists(it.url, it.title):
                 # Back-fill the surfacing date on a re-gather, even if the
@@ -75,16 +104,21 @@ def cmd_gather(store: Store, sources: list[dict]) -> int:
                     text=None, surfaced=it.surfaced,
                 )
                 continue
-            try:
-                art = extract(it.url, it.title, it.source)
-            except Exception as e:
-                _log(f"  [error] extract: {it.title[:60]}: {e}")
+            todo.append(it)
+
+        results = await asyncio.gather(
+            *(_extract_one(it) for it in todo), return_exceptions=True
+        )
+        for it, res in zip(todo, results):
+            if isinstance(res, BaseException):
+                _log(f"  [error] extract: {it.title[:60]}: {res}")
                 store.insert_raw(
                     it.source, it.url, it.title,
                     text=None, surfaced=it.surfaced,
                 )
                 failed_count += 1
                 continue
+            _, art = res
             if art is None:
                 store.insert_raw(
                     it.source, it.url, it.title,
@@ -95,12 +129,11 @@ def cmd_gather(store: Store, sources: list[dict]) -> int:
             else:
                 # Prefer the article's own date; fall back to the surfacing
                 # date so we always have something to display.
-                pub = art.published or it.surfaced
                 store.insert_raw(
                     it.source, it.url, it.title,
                     text=art.text,
                     surfaced=it.surfaced,
-                    published=pub,
+                    published=art.published or it.surfaced,
                 )
                 new_count += 1
                 _log(f"  + {it.title[:70]}  ({len(art.text)} chars)")
@@ -115,82 +148,70 @@ def _chunks(seq: list, n: int) -> list[list]:
     return [seq[i:i + n] for i in range(0, len(seq), n)]
 
 
-def cmd_summarize(store: Store, workers: int) -> int:
+async def _run_llm_stage(
+    stage: str,
+    pending: list,
+    batch_fn,
+    apply_fn,
+    workers: int,
+    batch_size: int = _BATCH_SIZE,
+) -> int:
+    """Shared driver for the summarize and rewrite stages: chunk the pending
+    rows, run `batch_fn` over each chunk with at most `workers` in flight, and
+    hand each (url_hash, value) pair to `apply_fn`."""
+    batches = _chunks(pending, batch_size)
+    _log(f"[{stage}] {len(pending)} pending in {len(batches)} batch(es) "
+         f"of {batch_size} (workers={workers})")
+    sem = asyncio.Semaphore(workers)
+
+    async def _one(rows: list) -> list[tuple[str, str]]:
+        async with sem:
+            out = await batch_fn([(r["title"], r["text"]) for r in rows])
+        return [(rows[i]["url_hash"], out[i]) for i in range(len(rows))]
+
+    done = 0
+    errors = 0
+    results = await asyncio.gather(
+        *(_one(b) for b in batches), return_exceptions=True
+    )
+    for batch, res in zip(batches, results):
+        if isinstance(res, BaseException):
+            errors += len(batch)
+            _log(f"  [error] batch ({len(batch)} articles): {res}")
+            continue
+        for h, value in res:
+            if value:
+                apply_fn(h, value)
+                done += 1
+            else:
+                errors += 1
+        _log(f"  ✓ batch of {len(batch)}")
+    _log(f"[{stage}] done {done}/{len(pending)}, {errors} errors")
+    return 0
+
+
+async def cmd_summarize(store: Store, workers: int) -> int:
     from .summarize import summarize_batch
 
     pending = store.pending_summary()
     if not pending:
         _log("[summarize] nothing pending")
         return 0
-    batches = _chunks(pending, _BATCH_SIZE)
-    _log(f"[summarize] {len(pending)} pending in {len(batches)} batch(es) "
-         f"of {_BATCH_SIZE} (workers={workers})")
-
-    def _run_batch(rows: list) -> list[tuple[str, str]]:
-        items = [(r["title"], r["text"]) for r in rows]
-        out = summarize_batch(items)
-        return [(rows[i]["url_hash"], out[i]) for i in range(len(rows))]
-
-    done = 0
-    errors = 0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_run_batch, b): b for b in batches}
-        for fut in as_completed(futures):
-            batch = futures[fut]
-            try:
-                results = fut.result()
-            except Exception as e:
-                errors += len(batch)
-                _log(f"  [error] batch ({len(batch)} articles): {e}")
-                continue
-            for h, s in results:
-                if s:
-                    store.set_summary(h, s)
-                    done += 1
-                else:
-                    errors += 1
-            _log(f"  ✓ batch of {len(batch)}")
-    _log(f"[summarize] done {done}/{len(pending)}, {errors} errors")
-    return 0
+    return await _run_llm_stage(
+        "summarize", pending, summarize_batch, store.set_summary, workers
+    )
 
 
-def cmd_rewrite(store: Store, workers: int) -> int:
+async def cmd_rewrite(store: Store, workers: int) -> int:
     from .rewrite import rewrite_batch
 
     pending = store.pending_rewrite()
     if not pending:
         _log("[rewrite] nothing pending")
         return 0
-    batches = _chunks(pending, _BATCH_SIZE)
-    _log(f"[rewrite] {len(pending)} pending in {len(batches)} batch(es) "
-         f"of {_BATCH_SIZE} (workers={workers})")
-
-    def _run_batch(rows: list) -> list[tuple[str, str]]:
-        items = [(r["title"], r["text"]) for r in rows]
-        out = rewrite_batch(items)
-        return [(rows[i]["url_hash"], out[i]) for i in range(len(rows))]
-
-    done = 0
-    errors = 0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_run_batch, b): b for b in batches}
-        for fut in as_completed(futures):
-            batch = futures[fut]
-            try:
-                results = fut.result()
-            except Exception as e:
-                errors += len(batch)
-                _log(f"  [error] batch ({len(batch)} articles): {e}")
-                continue
-            for h, body in results:
-                if body:
-                    store.set_body(h, body)
-                    done += 1
-                else:
-                    errors += 1
-            _log(f"  ✓ batch of {len(batch)}")
-    _log(f"[rewrite] done {done}/{len(pending)}, {errors} errors")
-    return 0
+    return await _run_llm_stage(
+        "rewrite", pending, rewrite_batch, store.set_body, workers
+    )
 
 
 def _format_date(iso: str | None) -> str:
@@ -202,34 +223,36 @@ def _format_date(iso: str | None) -> str:
         return iso
 
 
-def _gather_decorations() -> dict:
+async def gather_decorations(client: httpx.AsyncClient) -> dict:
     """Fetch the cover decorations (Wikipedia world news + QOTD + DYK)."""
     decorations: dict = {}
-    try:
-        wn = fetch_world_news()
-        if wn:
-            wn = summarize_world_news(wn)
-            decorations["world_news"] = wn
+    wn_res, qotd_res, dyk_res = await asyncio.gather(
+        fetch_world_news(client),
+        fetch_quote_of_day(client),
+        fetch_did_you_know(client, limit=4),
+        return_exceptions=True,
+    )
+    if isinstance(wn_res, BaseException):
+        _log(f"  [warn] world news: {wn_res}")
+    elif wn_res:
+        try:
+            decorations["world_news"] = await summarize_world_news(wn_res)
             from datetime import date as _d
             decorations["world_news_date"] = _d.today().strftime("%B %-d, %Y")
-    except Exception as e:
-        _log(f"  [warn] world news: {e}")
-    try:
-        qotd = fetch_quote_of_day()
-        if qotd:
-            decorations["quote"] = {"text": qotd[0], "author": qotd[1]}
-    except Exception as e:
-        _log(f"  [warn] qotd: {e}")
-    try:
-        dyk = fetch_did_you_know(limit=4)
-        if dyk:
-            decorations["dyk"] = dyk
-    except Exception as e:
-        _log(f"  [warn] dyk: {e}")
+        except Exception as e:
+            _log(f"  [warn] world news: {e}")
+    if isinstance(qotd_res, BaseException):
+        _log(f"  [warn] qotd: {qotd_res}")
+    elif qotd_res:
+        decorations["quote"] = {"text": qotd_res[0], "author": qotd_res[1]}
+    if isinstance(dyk_res, BaseException):
+        _log(f"  [warn] dyk: {dyk_res}")
+    elif dyk_res:
+        decorations["dyk"] = dyk_res
     return decorations
 
 
-def _collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
+def collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
     """Pick the latest N articles per source (N = source.limit), in source
     config order. Returns render-ready dicts."""
     out: list[dict] = []
@@ -265,7 +288,8 @@ def _collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
     return out
 
 
-def cmd_render(
+async def cmd_render(
+    client: httpx.AsyncClient,
     store: Store,
     date: str,
     out_dir: Path,
@@ -276,28 +300,33 @@ def cmd_render(
     No time-window filter, no read state. PDF reflects whatever is currently
     in the store at this moment.
     """
-    articles = _collect_current_edition(store, sources)
+    articles = collect_current_edition(store, sources)
     if not articles:
         _log("[render] no ready articles in store yet")
         return 0
     _log("[render] fetching cover decorations (Wikipedia world news + QOTD + DYK)")
-    decorations = _gather_decorations()
+    decorations = await gather_decorations(client)
     _log(f"[render] {len(articles)} articles → PDF")
     out_dir.mkdir(parents=True, exist_ok=True)
-    pdf = build_pdf(date, articles, out_dir, decorations=decorations)
+    pdf = await build_pdf(date, articles, out_dir, decorations=decorations)
     print(str(pdf))
     return 0
 
 
-def cmd_ingest(store: Store, sources: list[dict], workers: int) -> int:
+async def cmd_ingest(
+    client: httpx.AsyncClient,
+    store: Store,
+    sources: list[dict],
+    workers: int,
+) -> int:
     """Run gather + summarize + rewrite. No PDF — that's the renderer's job."""
-    rc = cmd_gather(store, sources)
+    rc = await cmd_gather(client, store, sources)
     if rc:
         return rc
-    rc = cmd_summarize(store, workers)
+    rc = await cmd_summarize(store, workers)
     if rc:
         return rc
-    return cmd_rewrite(store, workers)
+    return await cmd_rewrite(store, workers)
 
 
 def cmd_status(store: Store) -> int:
@@ -313,7 +342,7 @@ def cmd_status(store: Store) -> int:
 
 # --- CLI --------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="papernews")
     p.add_argument("--config", type=Path, default=Path("sources.toml"))
     p.add_argument("--out",    type=Path, default=Path("archive"))
@@ -340,8 +369,11 @@ def main(argv: list[str] | None = None) -> int:
     sp_b = sub.add_parser("build", help="ingest + render (default)")
     sp_b.add_argument("--workers", type=int, default=6)
     sp_b.add_argument("--date",    default=date_cls.today().isoformat())
+    return p
 
-    args = p.parse_args(argv)
+
+async def _main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     cmd = args.cmd or "build"
 
     if not args.config.exists():
@@ -356,26 +388,34 @@ def main(argv: list[str] | None = None) -> int:
 
     store = Store(args.state)
 
-    if cmd == "gather":
-        return cmd_gather(store, sources)
-    if cmd == "summarize":
-        return cmd_summarize(store, args.workers)
-    if cmd == "rewrite":
-        return cmd_rewrite(store, args.workers)
-    if cmd == "ingest":
-        return cmd_ingest(store, sources, args.workers)
-    if cmd == "render":
-        return cmd_render(store, args.date, args.out, sources)
     if cmd == "status":
         return cmd_status(store)
-    if cmd == "build":
-        rc = cmd_ingest(store, sources, args.workers)
-        if rc:
-            return rc
-        return cmd_render(store, args.date, args.out, sources)
+
+    # One client for the whole run, closed on the way out.
+    async with client_context() as client:
+        if cmd == "gather":
+            return await cmd_gather(client, store, sources)
+        if cmd == "summarize":
+            return await cmd_summarize(store, args.workers)
+        if cmd == "rewrite":
+            return await cmd_rewrite(store, args.workers)
+        if cmd == "ingest":
+            return await cmd_ingest(client, store, sources, args.workers)
+        if cmd == "render":
+            return await cmd_render(client, store, args.date, args.out, sources)
+        if cmd == "build":
+            rc = await cmd_ingest(client, store, sources, args.workers)
+            if rc:
+                return rc
+            return await cmd_render(client, store, args.date, args.out, sources)
 
     _log(f"[fatal] unknown command: {cmd}")
     return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Sync entry point for `[project.scripts]`."""
+    return asyncio.run(_main(argv))
 
 
 if __name__ == "__main__":

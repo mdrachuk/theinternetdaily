@@ -249,7 +249,8 @@ Four stages, each idempotent and resumable:
    the store" + "what's in sources.toml". Same content + same config → same
    cached PDF served instantly.
 
-A background `APScheduler` job runs steps 1–3 every 4 hours (configurable).
+A background `APScheduler` job (`AsyncIOScheduler`, on the app's event loop)
+runs steps 1–3 every 4 hours (configurable).
 The render step is on-demand; the first hit to `/digest.pdf` after an ingest
 builds the PDF and caches it.
 
@@ -262,6 +263,7 @@ builds the PDF and caches it.
 | `GET /preview.png` | page 1 rasterized at 180 DPI                        |
 | `GET /sources` | JSON list of configured sources + latest `fetched_at`   |
 | `GET /healthz` | liveness probe (returns `ok`)                           |
+| `GET /readyz`  | readiness probe — pings the store and parses the config |
 | `POST /ingest` | manual kick of the gather → summarize → rewrite cycle   |
 
 ## Configuring sources
@@ -417,10 +419,12 @@ anything else you can script.
 
 ## Tests
 
-Modest, no-network unittest suite for the web/scheduling/hook behaviour:
+Modest, no-network pytest suite covering the render tokenizer, the
+`since_hours` window, the batch parsers, the web/scheduling/hook behaviour,
+and an end-to-end ingest against a fake LLM backend:
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest
 ```
 
 ## Local development
@@ -504,7 +508,7 @@ papernews/
 ├── papernews/
 │   ├── fetch.py          # HN Algolia + RSS feedparser
 │   ├── extract.py        # trafilatura
-│   ├── llm.py            # LLM backend router (Anthropic or Ollama)
+│   ├── llm.py            # LLM backend router (Anthropic, vLLM, Ollama)
 │   ├── summarize.py      # summarization prompts + batching
 │   ├── rewrite.py        # rewrite prompts + batching
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
@@ -513,7 +517,7 @@ papernews/
 │   ├── preview.py        # PDF → PNG via pdftoppm
 │   ├── cache.py          # On-disk cache by content hash
 │   ├── cli.py            # papernews command
-│   ├── web.py            # Flask + APScheduler
+│   ├── web.py            # FastAPI + APScheduler (AsyncIOScheduler)
 │   └── template.tex.j2   # the magazine
 ├── sources.toml          # configured feeds
 ├── pyproject.toml

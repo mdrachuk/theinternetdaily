@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import jinja2
+
+
+# A hung xelatex used to block a gunicorn thread; on an event loop it would
+# block everything, so every run is bounded.
+XELATEX_TIMEOUT = 300.0
 
 
 _TEX_REPLACE = {
@@ -238,16 +243,49 @@ def _env(tpl_dir: Path) -> jinja2.Environment:
     return env
 
 
-def build_pdf(
+async def _run_xelatex(tex_path: Path, workdir: Path, timeout: float) -> None:
+    proc = await asyncio.create_subprocess_exec(
+        "xelatex",
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        "-output-directory",
+        str(workdir),
+        str(tex_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"xelatex timed out after {timeout:.0f}s")
+    if proc.returncode != 0:
+        sys.stderr.write(out.decode("utf-8", "replace")[-4000:])
+        sys.stderr.write(err.decode("utf-8", "replace")[-2000:])
+        raise RuntimeError(f"xelatex failed (exit {proc.returncode})")
+
+
+def render_tex(
+    date: str,
+    articles: list[dict],
+    decorations: dict | None = None,
+) -> str:
+    """Render the LaTeX source for an edition. Pure — no subprocess, no I/O
+    beyond reading the template, which makes it cheap to test."""
+    env = _env(Path(__file__).parent)
+    tpl = env.get_template("template.tex.j2")
+    return tpl.render(date=date, articles=articles, decorations=decorations or {})
+
+
+async def build_pdf(
     date: str,
     articles: list[dict],
     out_dir: Path,
     decorations: dict | None = None,
+    timeout: float = XELATEX_TIMEOUT,
 ) -> Path:
-    tpl_dir = Path(__file__).parent
-    env = _env(tpl_dir)
-    tpl = env.get_template("template.tex.j2")
-    tex_source = tpl.render(date=date, articles=articles, decorations=decorations or {})
+    tex_source = render_tex(date, articles, decorations)
 
     workdir = out_dir / ".build"
     workdir.mkdir(parents=True, exist_ok=True)
@@ -256,22 +294,7 @@ def build_pdf(
 
     # Run twice so hyperref's page references resolve.
     for _ in range(2):
-        result = subprocess.run(
-            [
-                "xelatex",
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                "-output-directory",
-                str(workdir),
-                str(tex_path),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            sys.stderr.write(result.stdout[-4000:])
-            sys.stderr.write(result.stderr[-2000:])
-            raise RuntimeError(f"xelatex failed (exit {result.returncode})")
+        await _run_xelatex(tex_path, workdir, timeout)
 
     pdf_src = workdir / f"{date}.pdf"
     pdf_dst = out_dir / f"{date}.pdf"

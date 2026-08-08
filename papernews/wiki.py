@@ -3,17 +3,21 @@
 - Daily 'Current events' portal URL for a top news section
 - Quote of the day (Wikiquote) for the cover
 - 'Did you know ...' nuggets (Wikipedia Main Page) for the cover
+
+Every network call takes the caller's `httpx.AsyncClient`.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import date, timedelta
 from typing import Optional
 
-import requests
+import httpx
 import trafilatura
 
-_UA = "Mozilla/5.0 papernews/0.1 (personal use)"
+from . import llm
+from .extract import fetch_html
 
 
 # --- Current events -------------------------------------------------------
@@ -52,7 +56,8 @@ def _strip_wiki(s: str) -> str:
     return s.strip("\"'“”‘’").strip()
 
 
-def fetch_quote_of_day(
+async def fetch_quote_of_day(
+    client: httpx.AsyncClient,
     max_words: int = 40,
     days_back: int = 14,
 ) -> Optional[tuple[str, str]]:
@@ -63,7 +68,7 @@ def fetch_quote_of_day(
         d = date.today() - timedelta(days=delta)
         page = f"Wikiquote:Quote_of_the_day/{d.strftime('%B_%-d,_%Y')}"
         try:
-            r = requests.get(
+            r = await client.get(
                 "https://en.wikiquote.org/w/api.php",
                 params={
                     "action": "parse",
@@ -71,7 +76,6 @@ def fetch_quote_of_day(
                     "format": "json",
                     "prop": "wikitext",
                 },
-                headers={"User-Agent": _UA},
                 timeout=15,
             )
             data = r.json()
@@ -110,20 +114,7 @@ def _split_source(body: str) -> tuple[str, str | None]:
     return body[: m.start()].strip().rstrip(".") + ".", m.group(1).strip()
 
 
-def _parse_current_events_day(url: str) -> list[dict]:
-    """Extract news bullets from one day's portal page.
-    Returns [{"text": ..., "source": ...}, ...]; source may be None."""
-    try:
-        downloaded = trafilatura.fetch_url(url)
-        text = trafilatura.extract(
-            downloaded,
-            include_comments=False,
-            include_tables=False,
-            favor_precision=True,
-        ) or ""
-    except Exception:
-        return []
-
+def _bullets_from_text(text: str) -> list[dict]:
     items: list[dict] = []
     for raw in text.splitlines():
         s = raw.strip()
@@ -136,6 +127,30 @@ def _parse_current_events_day(url: str) -> list[dict]:
             text_, source = _split_source(body)
             items.append({"text": text_, "source": source})
     return items
+
+
+def _extract_plain(html: str) -> str:
+    return trafilatura.extract(
+        html,
+        include_comments=False,
+        include_tables=False,
+        favor_precision=True,
+    ) or ""
+
+
+async def _parse_current_events_day(
+    client: httpx.AsyncClient, url: str
+) -> list[dict]:
+    """Extract news bullets from one day's portal page.
+    Returns [{"text": ..., "source": ...}, ...]; source may be None."""
+    try:
+        html = await fetch_html(client, url)
+        if not html:
+            return []
+        text = await asyncio.to_thread(_extract_plain, html)
+    except Exception:
+        return []
+    return _bullets_from_text(text)
 
 
 _TECH_FEEDS = [
@@ -159,25 +174,34 @@ _WESTERN_RE = re.compile(
 )
 
 
-def fetch_tech_headlines(per_feed: int = 2, max_items: int = 5) -> list[dict]:
+async def fetch_tech_headlines(
+    client: httpx.AsyncClient, per_feed: int = 2, max_items: int = 5
+) -> list[dict]:
     """Return up to max_items recent tech headlines with their source feed
     and the article URL. [{"text", "source", "url"}, ...]"""
-    import feedparser
-    import html as _html
+    from .fetch import fetch_rss
+
+    # All three feeds at once — they are independent and each is a slow tail.
+    results = await asyncio.gather(
+        *(
+            fetch_rss(client, name, url, limit=max(per_feed * 3, 6))
+            for name, url in _TECH_FEEDS
+        ),
+        return_exceptions=True,
+    )
 
     out: list[dict] = []
     seen: set[str] = set()
-    for feed_name, feed_url in _TECH_FEEDS:
-        d = feedparser.parse(feed_url)
+    for (feed_name, _), items in zip(_TECH_FEEDS, results):
+        if isinstance(items, BaseException):
+            continue
         count = 0
-        for entry in d.entries:
-            raw = (getattr(entry, "title", "") or "").strip()
-            title = " ".join(_html.unescape(raw).split())
-            article_url = (getattr(entry, "link", "") or "").strip() or None
+        for item in items:
+            title = item.title
             if not title or title.lower() in seen:
                 continue
             seen.add(title.lower())
-            out.append({"text": title, "source": feed_name, "url": article_url})
+            out.append({"text": title, "source": feed_name, "url": item.url or None})
             count += 1
             if count >= per_feed:
                 break
@@ -186,7 +210,9 @@ def fetch_tech_headlines(per_feed: int = 2, max_items: int = 5) -> list[dict]:
     return out[:max_items]
 
 
-def fetch_western_news(max_items: int = 2, days_back: int = 3) -> list[dict]:
+async def fetch_western_news(
+    client: httpx.AsyncClient, max_items: int = 2, days_back: int = 3
+) -> list[dict]:
     """Pull Wikipedia Current Events bullets that mention a Western country
     or major-ally context. Returns [{"text": ..., "source": ...}, ...]"""
     from datetime import date as _date, timedelta as _td
@@ -196,7 +222,7 @@ def fetch_western_news(max_items: int = 2, days_back: int = 3) -> list[dict]:
     out: list[dict] = []
     for delta in range(days_back):
         day = today - _td(days=delta)
-        for item in _parse_current_events_day(current_events_url(day)):
+        for item in await _parse_current_events_day(client, current_events_url(day)):
             if item["text"] in seen:
                 continue
             seen.add(item["text"])
@@ -208,41 +234,40 @@ def fetch_western_news(max_items: int = 2, days_back: int = 3) -> list[dict]:
     return out
 
 
-def fetch_world_news() -> list[dict]:
+async def fetch_world_news(client: httpx.AsyncClient) -> list[dict]:
     """5 tech headlines + up to 2 Western-relevant Wikipedia items.
     Each item: {"text": ..., "source": ...}."""
-    tech = fetch_tech_headlines(per_feed=2, max_items=5)
-    western = fetch_western_news(max_items=2)
+    tech, western = await asyncio.gather(
+        fetch_tech_headlines(client, per_feed=2, max_items=5),
+        fetch_western_news(client, max_items=2),
+    )
     return tech + western
 
 
 # --- News bullet summarization --------------------------------------------
 
-def summarize_world_news(items: list[dict]) -> list[dict]:
+_WORLD_NEWS_SYSTEM = (
+    "You rewrite news bullets for a compact daily digest.\n"
+    "- Output ONE short sentence per input bullet, max 18 words.\n"
+    "- Preserve all key facts (who, what, where).\n"
+    "- Do NOT include any source citation in the output (the source is shown separately).\n"
+    "- No preamble, no quotes, no commentary.\n"
+    "- Output EXACTLY one line per input bullet, in the same order, prefixed with its number and a period."
+)
+
+
+async def summarize_world_news(items: list[dict]) -> list[dict]:
     """Rewrite each news item into a single short sentence (~15 words),
-    preserving its source attribution. Single Anthropic call per batch."""
+    preserving its source attribution. One LLM call per batch, through the
+    configured backend — so a local-only install makes no Anthropic calls."""
     if not items:
         return items
 
-    from anthropic import Anthropic
-
-    system = (
-        "You rewrite news bullets for a compact daily digest.\n"
-        "- Output ONE short sentence per input bullet, max 18 words.\n"
-        "- Preserve all key facts (who, what, where).\n"
-        "- Do NOT include any source citation in the output (the source is shown separately).\n"
-        "- No preamble, no quotes, no commentary.\n"
-        "- Output EXACTLY one line per input bullet, in the same order, prefixed with its number and a period."
-    )
     user = "\n".join(f"{i+1}. {it['text']}" for i, it in enumerate(items))
     try:
-        msg = Anthropic().messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=150 * len(items),
-            system=system,
-            messages=[{"role": "user", "content": user}],
+        text = await llm.chat(
+            _WORLD_NEWS_SYSTEM, user, max_tokens=150 * len(items)
         )
-        text = msg.content[0].text
     except Exception:
         return items
 
@@ -268,13 +293,7 @@ def summarize_world_news(items: list[dict]) -> list[dict]:
 
 # --- Did you know ---------------------------------------------------------
 
-def fetch_did_you_know(limit: int = 4) -> list[str]:
-    """Pull 'Did you know ...' bullets from today's Wikipedia Main Page."""
-    try:
-        downloaded = trafilatura.fetch_url("https://en.wikipedia.org/wiki/Main_Page")
-        text = trafilatura.extract(downloaded, include_comments=False) or ""
-    except Exception:
-        return []
+def _dyk_from_text(text: str, limit: int) -> list[str]:
     idx = text.find("Did you know")
     if idx < 0:
         return []
@@ -293,3 +312,17 @@ def fetch_did_you_know(limit: int = 4) -> list[str]:
         elif items:
             break
     return items[:limit]
+
+
+async def fetch_did_you_know(client: httpx.AsyncClient, limit: int = 4) -> list[str]:
+    """Pull 'Did you know ...' bullets from today's Wikipedia Main Page."""
+    try:
+        html = await fetch_html(client, "https://en.wikipedia.org/wiki/Main_Page")
+        if not html:
+            return []
+        text = await asyncio.to_thread(
+            lambda h: trafilatura.extract(h, include_comments=False) or "", html
+        )
+    except Exception:
+        return []
+    return _dyk_from_text(text, limit)

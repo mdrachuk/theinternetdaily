@@ -70,12 +70,10 @@ ENV PAPERNEWS_CACHE=/data/archive/cache
 
 EXPOSE 8000
 
-# Use gunicorn with one worker; APScheduler runs in-process, multiple workers
-# would multiply ingest runs.
-CMD ["/opt/venv/bin/gunicorn", \
-     "--workers", "1", \
-     "--threads", "8", \
-     "--bind", "0.0.0.0:8000", \
-     "--timeout", "900", \
-     "--graceful-timeout", "30", \
-     "papernews.web:app"]
+# One uvicorn worker: APScheduler runs in-process, so multiple workers would
+# multiply ingest runs. Concurrency comes from the event loop now, not threads.
+CMD ["/opt/venv/bin/uvicorn", \
+     "papernews.web:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--timeout-graceful-shutdown", "30"]

@@ -48,12 +48,12 @@ _MODEL = "claude-haiku-4-5"  # reference only; model selection lives in llm.py
 _MAX_CHARS = 16000
 
 
-def rewrite(title: str, text: str) -> str:
-    return rewrite_batch([(title, text)])[0]
+async def rewrite(title: str, text: str) -> str:
+    return (await rewrite_batch([(title, text)]))[0]
 
 
-def rewrite_batch(items: Sequence[tuple[str, str]]) -> list[str]:
-    """Rewrite many (title, body) pairs in a single Anthropic call.
+async def rewrite_batch(items: Sequence[tuple[str, str]]) -> list[str]:
+    """Rewrite many (title, body) pairs in a single LLM call.
     Returns one rewritten body per input, in order; empty string for any
     item the model failed to delimit correctly."""
     if not items:
@@ -67,7 +67,7 @@ def rewrite_batch(items: Sequence[tuple[str, str]]) -> list[str]:
         )
     user_msg = "\n\n".join(parts)
 
-    text_out = llm.chat(_SYSTEM, user_msg, max_tokens=4096 * len(items))
+    text_out = await llm.chat(_SYSTEM, user_msg, max_tokens=4096 * len(items))
 
     out = [""] * len(items)
     pattern = re.compile(

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def _url_hash(url: str) -> str:
+def url_hash(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
 
@@ -67,7 +67,7 @@ class Store:
     def exists(self, url: str, title: str) -> bool:
         cur = self.con.execute(
             "SELECT 1 FROM article WHERE url_hash = ? OR title_norm = ? LIMIT 1",
-            (_url_hash(url), _norm_title(title)),
+            (url_hash(url), _norm_title(title)),
         )
         return cur.fetchone() is not None
 
@@ -81,7 +81,7 @@ class Store:
         published: str | None = None,
     ) -> None:
         now = _now()
-        h = _url_hash(url)
+        h = url_hash(url)
         self.con.execute(
             """
             INSERT OR IGNORE INTO article

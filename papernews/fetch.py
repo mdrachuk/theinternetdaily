@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import calendar
 import html
 import json
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator
 
 import feedparser
-import requests
+import httpx
 
 
 def _clean_title(s: str | None) -> str:
@@ -35,17 +35,18 @@ class RawItem:
 _HN_SEARCH = "https://hn.algolia.com/api/v1/search"
 
 
-def fetch_hn(
+async def fetch_hn(
+    client: httpx.AsyncClient,
     source_name: str = "Hacker News",
     limit: int = 10,
     since_hours: int = 48,
     min_points: int = 50,
-) -> Iterator[RawItem]:
+) -> list[RawItem]:
     since = int(time.time() - since_hours * 3600)
     params = {
         "tags": "story",
         # Algolia wants multiple numeric filters as a JSON-encoded array.
-        # Passing a bare Python list makes requests emit repeated
+        # Passing a bare Python list makes httpx emit repeated
         # `numericFilters=` params, of which Algolia honours only the first —
         # which silently drops the min_points gate.
         "numericFilters": json.dumps(
@@ -53,11 +54,12 @@ def fetch_hn(
         ),
         "hitsPerPage": 100,
     }
-    r = requests.get(_HN_SEARCH, params=params, timeout=15)
+    r = await client.get(_HN_SEARCH, params=params, timeout=15)
     r.raise_for_status()
     hits = r.json().get("hits", [])
     hits.sort(key=lambda h: h.get("points", 0), reverse=True)
 
+    out: list[RawItem] = []
     for h in hits[:limit]:
         title = _clean_title(h.get("title"))
         if not title:
@@ -68,39 +70,48 @@ def fetch_hn(
             datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
             if ts else None
         )
-        yield RawItem(source=source_name, url=url, title=title, surfaced=surfaced)
+        out.append(RawItem(source=source_name, url=url, title=title, surfaced=surfaced))
+    return out
 
 
-def fetch_wikipedia_events(
+async def fetch_wikipedia_events(
     source_name: str = "World news",
     days_back: int = 1,
-) -> Iterator[RawItem]:
-    """Yield one item per day of Wikipedia's Portal:Current_events.
+) -> list[RawItem]:
+    """One item per day of Wikipedia's Portal:Current_events.
 
-    days_back=1 → just today. Increase to backfill recent days.
+    days_back=1 → just today. Increase to backfill recent days. Needs no
+    network of its own: the URLs are derived from the date.
     """
     from datetime import date as _date, timedelta as _td
     from .wiki import current_events_url, current_events_title
 
     today = _date.today()
-    for delta in range(days_back):
-        day = today - _td(days=delta)
-        yield RawItem(
+    return [
+        RawItem(
             source=source_name,
-            url=current_events_url(day),
-            title=current_events_title(day),
-            surfaced=day.isoformat(),
+            url=current_events_url(today - _td(days=delta)),
+            title=current_events_title(today - _td(days=delta)),
+            surfaced=(today - _td(days=delta)).isoformat(),
         )
+        for delta in range(days_back)
+    ]
 
 
-def fetch_rss(
+async def fetch_rss(
+    client: httpx.AsyncClient,
     source_name: str,
     feed_url: str,
     limit: int = 20,
     since_hours: int | None = None,
-) -> Iterator[RawItem]:
+) -> list[RawItem]:
     cutoff = time.time() - since_hours * 3600 if since_hours is not None else None
-    d = feedparser.parse(feed_url)
+    r = await client.get(feed_url)
+    r.raise_for_status()
+    # feedparser.parse(url) would do its own blocking fetch; hand it bytes and
+    # keep its (CPU-bound, sometimes slow) parse off the event loop.
+    d = await asyncio.to_thread(feedparser.parse, r.content)
+    out: list[RawItem] = []
     for entry in d.entries[:limit]:
         url = getattr(entry, "link", None)
         title = _clean_title(getattr(entry, "title", None))
@@ -114,4 +125,5 @@ def fetch_rss(
             if calendar.timegm(parsed) < cutoff:
                 continue
         surfaced = time.strftime("%Y-%m-%d", parsed) if parsed else None
-        yield RawItem(source=source_name, url=url, title=title, surfaced=surfaced)
+        out.append(RawItem(source=source_name, url=url, title=title, surfaced=surfaced))
+    return out
