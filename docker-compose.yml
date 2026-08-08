@@ -24,6 +24,10 @@ services:
       # docker-compose.mongo.yml / docker-compose.redis.yml to change either.
       - PAPERNEWS_STORE=${PAPERNEWS_STORE:-}
       - PAPERNEWS_QUEUE=${PAPERNEWS_QUEUE:-}
+      # Paths inside the container. The image defaults these to /data, so they
+      # only need setting to point at a second store — a benchmark run, say.
+      - PAPERNEWS_STATE=${PAPERNEWS_STATE:-/data/state.db}
+      - PAPERNEWS_CACHE=${PAPERNEWS_CACHE:-/data/archive/cache}
       - INGEST_INTERVAL_SECONDS=${INGEST_INTERVAL_SECONDS:-14400}
       - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
       # Hook to push the PDF to reMarkable after each ingest
