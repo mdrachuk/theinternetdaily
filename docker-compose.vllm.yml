@@ -13,6 +13,10 @@
 #   forces --max-model-len 16384 and --max-num-seqs 4, and why the vLLM backend
 #   ships much smaller batch limits than the Anthropic one (papernews/llm.py).
 #   Ada has native FP8, so --quantization fp8 costs little quality.
+#
+# Serving a pre-quantized checkpoint instead? Set the matching flag, e.g. a
+# w4a16 QAT release: VLLM_QUANTIZATION=compressed-tensors. Smaller weights buy
+# a bigger KV cache, so VLLM_MAX_MODEL_LEN can go up with it.
 services:
   papernews:
     environment:
@@ -32,8 +36,8 @@ services:
     restart: unless-stopped
     command: >
       --model ${VLLM_MODEL:-google/gemma-3-12b-it}
-      --quantization fp8
-      --kv-cache-dtype fp8
+      --quantization ${VLLM_QUANTIZATION:-fp8}
+      --kv-cache-dtype ${VLLM_KV_CACHE_DTYPE:-fp8}
       --max-model-len ${VLLM_MAX_MODEL_LEN:-16384}
       --max-num-seqs ${VLLM_MAX_NUM_SEQS:-4}
       --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
@@ -42,7 +46,9 @@ services:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
     volumes:
       # ~25 GB of weights: cache them on the host so the download happens once.
-      - ./data/hf:/root/.cache/huggingface
+      # Point HF_CACHE at an existing ~/.cache/huggingface to reuse what you
+      # already have (and the token in it) instead of downloading again.
+      - ${HF_CACHE:-./data/hf}:/root/.cache/huggingface
     # vLLM's workers talk over shared memory; the default 64 MB is not enough.
     ipc: host
     ports:

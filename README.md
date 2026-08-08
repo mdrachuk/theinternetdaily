@@ -511,6 +511,23 @@ and an end-to-end ingest against a fake LLM backend:
 uv run pytest
 ```
 
+`tests/test_e2e_offline.py` runs the whole pipeline — gather → extract →
+summarize → rewrite → edition → LaTeX — with HTTP served by
+`httpx.MockTransport` and the model replaced by `papernews.testing.FakeBackend`,
+so it needs no network, no GPU and no API key. The xelatex step runs too, but
+only where xelatex is installed.
+
+Two scripts cover what a test suite cannot:
+
+```bash
+# per-stage wall clock, tokens/s and peak VRAM, as a markdown table
+uv run python scripts/benchmark.py --backend vllm --state data/bench.db
+
+# the same articles through two backends, side by side, plus checks on the
+# markup render.py depends on (code fences, inline backticks, math delimiters)
+uv run python scripts/quality_diff.py --a anthropic --b vllm --limit 20
+```
+
 ## Local development
 
 You don't have to use Docker — the CLI works directly. The project is
@@ -614,6 +631,9 @@ papernews/
 │   ├── cli.py            # papernews command
 │   ├── web.py            # FastAPI + APScheduler (AsyncIOScheduler)
 │   └── template.tex.j2   # the magazine
+├── scripts/
+│   ├── benchmark.py      # per-stage timing, tokens/s, peak VRAM
+│   └── quality_diff.py   # backend A vs backend B, incl. markup checks
 ├── sources.toml          # configured feeds
 ├── pyproject.toml
 ├── Dockerfile
