@@ -1,6 +1,6 @@
-"""Tests for the changes that addressed issue #1.
+"""Tests for the changes that addressed issue #1, ported to FastAPI.
 
-These tests intentionally avoid touching the network, the Anthropic SDK, or
+These tests intentionally avoid touching the network, the LLM SDKs, or
 xelatex. They cover the four user-visible features added in that issue:
 
     1. INGEST_SCHEDULE cron-style scheduling
@@ -8,187 +8,183 @@ xelatex. They cover the four user-visible features added in that issue:
     3. GET /ingest returns a 405 with a helpful JSON hint
     4. POST_INGEST_HOOK fires after a successful ingest
 
-Run them with:
-
-    python -m unittest discover -s tests
+The app is driven through httpx.ASGITransport, which does not run the
+lifespan — so importing or exercising the app never starts a scheduler.
 """
 from __future__ import annotations
 
 import os
 import stat
-import subprocess
-import tempfile
-import unittest
 from pathlib import Path
 from unittest import mock
 
+import httpx
+import pytest
 
-# Make sure the background scheduler does not actually start during import.
-os.environ.setdefault("PAPERNEWS_NO_SCHED", "1")
-os.environ.setdefault("PAPERNEWS_STATE", "/tmp/papernews-tests-state.db")
-os.environ.setdefault("PAPERNEWS_CACHE", "/tmp/papernews-tests-cache")
+import papernews.jobs as jobs
+import papernews.web as web
 
 
-def _fresh_scheduler():
-    """Re-import start_scheduler so it picks up the current env vars.
+async def _noop() -> None:
+    return None
 
-    APScheduler keeps its own list of jobs once a scheduler is created, so we
-    create a fresh one per test and shut it down afterwards.
-    """
-    from importlib import reload
-    import papernews.web as web
-    reload(web)
-    return web.start_scheduler()
+
+@pytest.fixture
+def clean_env():
+    keys = (
+        "INGEST_SCHEDULE", "INGEST_TIMEZONE", "INGEST_INTERVAL_SECONDS",
+        "POST_INGEST_HOOK", "POST_INGEST_HOOK_TIMEOUT",
+    )
+    saved = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        os.environ.pop(k, None)
+    yield
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+@pytest.fixture
+async def client():
+    app = web.create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as c:
+        yield c
 
 
 # --- 1 & 2: scheduler modes -----------------------------------------------
 
-class SchedulerModeTests(unittest.TestCase):
-    def setUp(self):
-        # Clean env for each test
-        for k in ("INGEST_SCHEDULE", "INGEST_TIMEZONE", "INGEST_INTERVAL_SECONDS"):
-            os.environ.pop(k, None)
+async def test_cron_schedule_creates_one_job_per_time(clean_env):
+    os.environ["INGEST_SCHEDULE"] = "07:00,18:30"
+    os.environ["INGEST_TIMEZONE"] = "Europe/London"
+    sched = web.start_scheduler(_noop)
+    try:
+        jobs = sched.get_jobs()
+        assert len(jobs) == 2
+        triggers = [str(j.trigger) for j in jobs]
+        assert any("hour='7'" in t and "minute='0'" in t for t in triggers), triggers
+        assert any("hour='18'" in t and "minute='30'" in t for t in triggers), triggers
+        tzs = {str(j.trigger.timezone) for j in jobs}
+        assert any("Europe/London" in z for z in tzs), tzs
+    finally:
+        sched.shutdown(wait=False)
 
-    def test_cron_schedule_creates_one_job_per_time(self):
-        os.environ["INGEST_SCHEDULE"] = "07:00,18:30"
-        os.environ["INGEST_TIMEZONE"] = "Europe/London"
-        sched = _fresh_scheduler()
-        try:
-            jobs = sched.get_jobs()
-            self.assertEqual(len(jobs), 2)
-            triggers = [str(j.trigger) for j in jobs]
-            self.assertTrue(
-                any("hour='7'" in t and "minute='0'" in t for t in triggers),
-                f"no 07:00 trigger in {triggers}",
-            )
-            self.assertTrue(
-                any("hour='18'" in t and "minute='30'" in t for t in triggers),
-                f"no 18:30 trigger in {triggers}",
-            )
-            tzs = {str(j.trigger.timezone) for j in jobs}
-            self.assertTrue(
-                any("Europe/London" in z for z in tzs),
-                f"timezone not propagated; got {tzs}",
-            )
-        finally:
-            sched.shutdown(wait=False)
 
-    def test_cron_ignores_malformed_entries_but_keeps_valid_ones(self):
-        os.environ["INGEST_SCHEDULE"] = "07:00,not-a-time,18:00"
-        sched = _fresh_scheduler()
-        try:
-            jobs = sched.get_jobs()
-            self.assertEqual(len(jobs), 2, "malformed entry must be skipped")
-        finally:
-            sched.shutdown(wait=False)
+async def test_cron_ignores_malformed_entries_but_keeps_valid_ones(clean_env):
+    os.environ["INGEST_SCHEDULE"] = "07:00,not-a-time,18:00"
+    sched = web.start_scheduler(_noop)
+    try:
+        assert len(sched.get_jobs()) == 2, "malformed entry must be skipped"
+    finally:
+        sched.shutdown(wait=False)
 
-    def test_interval_fallback_when_no_schedule(self):
-        os.environ["INGEST_INTERVAL_SECONDS"] = "60"
-        sched = _fresh_scheduler()
-        try:
-            jobs = sched.get_jobs()
-            self.assertEqual(len(jobs), 1)
-            self.assertEqual(jobs[0].id, "ingest")
-            self.assertIn("interval[", str(jobs[0].trigger))
-        finally:
-            sched.shutdown(wait=False)
+
+async def test_interval_fallback_when_no_schedule(clean_env):
+    os.environ["INGEST_INTERVAL_SECONDS"] = "60"
+    sched = web.start_scheduler(_noop)
+    try:
+        jobs = sched.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].id == "ingest"
+        assert "interval[" in str(jobs[0].trigger)
+    finally:
+        sched.shutdown(wait=False)
 
 
 # --- 3: GET /ingest helper -------------------------------------------------
 
-class GetIngestHintTests(unittest.TestCase):
-    def test_get_ingest_returns_helpful_405(self):
-        from papernews.web import app
-        client = app.test_client()
-        r = client.get("/ingest")
-        self.assertEqual(r.status_code, 405)
-        body = r.get_json()
-        self.assertIn("error", body)
-        self.assertIn("POST", body["error"])
-        self.assertIn("hint", body)
-        self.assertIn("curl", body["hint"].lower())
+async def test_get_ingest_returns_helpful_405(client):
+    r = await client.get("/ingest")
+    assert r.status_code == 405
+    body = r.json()
+    assert "POST" in body["error"]
+    assert "curl" in body["hint"].lower()
+
+
+async def test_healthz(client):
+    r = await client.get("/healthz")
+    assert r.status_code == 200
+    assert r.text == "ok"
 
 
 # --- 4: POST_INGEST_HOOK ---------------------------------------------------
 
-class PostIngestHookTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.tmp_path = Path(self.tmp.name)
-        # Stub PDF the hook would receive
-        self.fake_pdf = self.tmp_path / "fake.pdf"
-        self.fake_pdf.write_bytes(b"%PDF-stub")
-        # Hook script that just records its argv
-        self.hook_log = self.tmp_path / "hook.log"
-        self.hook = self.tmp_path / "hook.sh"
-        self.hook.write_text(f'#!/usr/bin/env bash\necho "$1" > "{self.hook_log}"\n')
-        self.hook.chmod(self.hook.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-
-    def tearDown(self):
-        for k in ("POST_INGEST_HOOK", "POST_INGEST_HOOK_TIMEOUT"):
-            os.environ.pop(k, None)
-        self.tmp.cleanup()
-
-    def test_hook_runs_with_pdf_path_after_successful_ingest(self):
-        os.environ["POST_INGEST_HOOK"] = str(self.hook)
-
-        from importlib import reload
-        import papernews.web as web
-        reload(web)
-
-        with (
-            # Bypass actual ingest work (no network, no Anthropic).
-            mock.patch.object(web, "cmd_ingest", return_value=0),
-            # Pretend the PDF was already built.
-            mock.patch.object(web, "_build_pdf_for_key", return_value=self.fake_pdf),
-            # Avoid hitting sources.toml.
-            mock.patch.object(web, "_load_sources", return_value=[]),
-            # Avoid creating a real Store.
-            mock.patch.object(web, "Store", return_value=mock.MagicMock()),
-            mock.patch.object(web, "_current_key", return_value="testkey"),
-        ):
-            web._do_ingest()
-
-        self.assertTrue(self.hook_log.exists(), "hook script did not run")
-        self.assertEqual(self.hook_log.read_text().strip(), str(self.fake_pdf))
-
-    def test_hook_failure_does_not_propagate(self):
-        # Hook that exits non-zero — ingest should still complete cleanly.
-        bad_hook = self.tmp_path / "bad.sh"
-        bad_hook.write_text("#!/usr/bin/env bash\nexit 1\n")
-        bad_hook.chmod(bad_hook.stat().st_mode | stat.S_IEXEC)
-        os.environ["POST_INGEST_HOOK"] = str(bad_hook)
-
-        from importlib import reload
-        import papernews.web as web
-        reload(web)
-
-        with (
-            mock.patch.object(web, "cmd_ingest", return_value=0),
-            mock.patch.object(web, "_build_pdf_for_key", return_value=self.fake_pdf),
-            mock.patch.object(web, "_load_sources", return_value=[]),
-            mock.patch.object(web, "Store", return_value=mock.MagicMock()),
-            mock.patch.object(web, "_current_key", return_value="testkey"),
-        ):
-            # Must not raise.
-            web._do_ingest()
-
-    def test_no_hook_means_no_subprocess(self):
-        os.environ.pop("POST_INGEST_HOOK", None)
-
-        from importlib import reload
-        import papernews.web as web
-        reload(web)
-
-        with (
-            mock.patch.object(web, "cmd_ingest", return_value=0),
-            mock.patch.object(web, "_load_sources", return_value=[]),
-            mock.patch.object(web, "Store", return_value=mock.MagicMock()),
-            mock.patch.object(web, "subprocess") as fake_sub,
-        ):
-            web._do_ingest()
-            fake_sub.run.assert_not_called()
+@pytest.fixture
+def hook_env(tmp_path: Path):
+    """A stub PDF plus an executable hook that records its argv."""
+    fake_pdf = tmp_path / "fake.pdf"
+    fake_pdf.write_bytes(b"%PDF-stub")
+    hook_log = tmp_path / "hook.log"
+    hook = tmp_path / "hook.sh"
+    hook.write_text(f'#!/usr/bin/env bash\necho "$1" > "{hook_log}"\n')
+    hook.chmod(hook.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return fake_pdf, hook, hook_log, tmp_path
 
 
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
+def _stubbed_ingest(fake_pdf: Path):
+    """Bypass the real ingest work: no network, no LLM, no PDF build."""
+    return (
+        mock.patch.object(jobs, "cmd_ingest", new=mock.AsyncMock(return_value=0)),
+        mock.patch.object(
+            jobs, "build_pdf_for_key", new=mock.AsyncMock(return_value=fake_pdf)
+        ),
+        mock.patch.object(jobs.config, "load_sources", return_value=[]),
+        mock.patch.object(jobs, "open_store", return_value=mock.AsyncMock()),
+        mock.patch.object(jobs, "current_key", new=mock.AsyncMock(return_value="k")),
+    )
+
+
+async def test_hook_runs_with_pdf_path_after_successful_ingest(clean_env, hook_env):
+    fake_pdf, hook, hook_log, _ = hook_env
+    os.environ["POST_INGEST_HOOK"] = str(hook)
+
+    patches = _stubbed_ingest(fake_pdf)
+    for p in patches:
+        p.start()
+    try:
+        await jobs.ingest()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert hook_log.exists(), "hook script did not run"
+    assert hook_log.read_text().strip() == str(fake_pdf)
+
+
+async def test_hook_failure_does_not_propagate(clean_env, hook_env):
+    fake_pdf, _, _, tmp_path = hook_env
+    bad_hook = tmp_path / "bad.sh"
+    bad_hook.write_text("#!/usr/bin/env bash\nexit 1\n")
+    bad_hook.chmod(bad_hook.stat().st_mode | stat.S_IEXEC)
+    os.environ["POST_INGEST_HOOK"] = str(bad_hook)
+
+    patches = _stubbed_ingest(fake_pdf)
+    for p in patches:
+        p.start()
+    try:
+        await jobs.ingest()  # must not raise
+    finally:
+        for p in patches:
+            p.stop()
+
+
+async def test_no_hook_means_no_subprocess(clean_env, hook_env):
+    fake_pdf, _, _, _ = hook_env
+    os.environ.pop("POST_INGEST_HOOK", None)
+
+    patches = _stubbed_ingest(fake_pdf)
+    run_hook = mock.patch.object(jobs, "run_hook", new=mock.AsyncMock())
+    for p in patches:
+        p.start()
+    mocked = run_hook.start()
+    try:
+        await jobs.ingest()
+        mocked.assert_not_awaited()
+    finally:
+        run_hook.stop()
+        for p in patches:
+            p.stop()

@@ -1,0 +1,29 @@
+# Optional MongoDB backend.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.mongo.yml up
+#
+# The default compose file stays a single service — a self-hoster should not
+# have to run a database server to read a newspaper. This overlay exists
+# because the store protocol has a second implementation and it deserves to be
+# runnable, and because a downstream multi-user service wants per-user
+# databases without reimplementing the layer.
+services:
+  papernews:
+    environment:
+      - PAPERNEWS_STORE=mongodb://mongo:27017/papernews
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    container_name: papernews-mongo
+    restart: unless-stopped
+    command: ["--quiet"]
+    volumes:
+      - ./data/mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

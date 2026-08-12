@@ -5,14 +5,29 @@ services:
     container_name: papernews
     restart: unless-stopped
     environment:
-      # LLM backend — "anthropic" (default) or "ollama" (bring your own Ollama instance)
+      # LLM backend — "anthropic" (default), "vllm", or "ollama".
+      # For a local GPU, add the overlay: -f docker-compose.vllm.yml
       - LLM_BACKEND=${LLM_BACKEND:-anthropic}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      # Point these at a vLLM server you run yourself; the overlay sets them
+      # for the bundled one.
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-}
+      - VLLM_MODEL=${VLLM_MODEL:-}
       # `host.docker.internal` reaches an Ollama running on the host. On
       # Docker Desktop (Mac/Windows) this resolves automatically; the
       # extra_hosts entry below is what makes it work on Linux too.
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral}
+      # Storage and queue. Defaults: SQLite at /data/state.db and an
+      # in-process asyncio queue — no extra services. See
+      # docker-compose.mongo.yml / docker-compose.redis.yml to change either.
+      - PAPERNEWS_STORE=${PAPERNEWS_STORE:-}
+      - PAPERNEWS_QUEUE=${PAPERNEWS_QUEUE:-}
+      # Paths inside the container. The image defaults these to /data, so they
+      # only need setting to point at a second store — a benchmark run, say.
+      - PAPERNEWS_STATE=${PAPERNEWS_STATE:-/data/state.db}
+      - PAPERNEWS_CACHE=${PAPERNEWS_CACHE:-/data/archive/cache}
       - INGEST_INTERVAL_SECONDS=${INGEST_INTERVAL_SECONDS:-14400}
       - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
       # Hook to push the PDF to reMarkable after each ingest

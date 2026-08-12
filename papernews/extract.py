@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
+import httpx
 import trafilatura
 from trafilatura.metadata import extract_metadata
 
@@ -15,12 +17,26 @@ class Article:
     published: str | None = None  # ISO date from page metadata, may be None
 
 
-def extract(url: str, title: str, source: str) -> Article | None:
-    downloaded = trafilatura.fetch_url(url)
-    if not downloaded:
+async def fetch_html(client: httpx.AsyncClient, url: str) -> str | None:
+    """GET a page and return its decoded body, or None if it isn't usable
+    HTML. Replaces `trafilatura.fetch_url`, which does its own blocking
+    request with its own connection pool."""
+    try:
+        r = await client.get(url)
+    except httpx.HTTPError:
         return None
+    if r.status_code >= 400:
+        return None
+    ctype = r.headers.get("content-type", "")
+    if ctype and "html" not in ctype and "xml" not in ctype and "text" not in ctype:
+        return None
+    return r.text or None
+
+
+def _parse(html: str, source: str, url: str, title: str) -> Article | None:
+    """Blocking half of `extract` — runs in a worker thread."""
     text = trafilatura.extract(
-        downloaded,
+        html,
         include_comments=False,
         include_tables=False,
         favor_precision=True,
@@ -29,9 +45,20 @@ def extract(url: str, title: str, source: str) -> Article | None:
         return None
     published: str | None = None
     try:
-        md = extract_metadata(downloaded)
+        md = extract_metadata(html)
         if md and md.date:
             published = md.date  # trafilatura returns "YYYY-MM-DD"
     except Exception:
         pass
     return Article(source=source, url=url, title=title, text=text, published=published)
+
+
+async def extract(
+    client: httpx.AsyncClient, url: str, title: str, source: str
+) -> Article | None:
+    html = await fetch_html(client, url)
+    if not html:
+        return None
+    # trafilatura's extraction is pure CPU (lxml + heuristics) and takes tens
+    # to hundreds of milliseconds per page — long enough to stall the loop.
+    return await asyncio.to_thread(_parse, html, source, url, title)

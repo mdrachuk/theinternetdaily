@@ -123,8 +123,16 @@ container restarts.
 
 ## LLM backends
 
-papernews routes all LLM calls through `papernews/llm.py`. Switch backends
-with the `LLM_BACKEND` env var.
+Every LLM call goes through an `LLMBackend` (`papernews/llm.py`) — a protocol
+with three implementations. Pick one with `LLM_BACKEND`, or pass `--backend` to
+the CLI. Nothing is decided at import time, so one process can drive two
+backends if it wants to.
+
+Each backend carries its own batching limits, and that is not a detail: the
+batch that is comfortable for Haiku (8 articles × 16 000 chars, asking for
+32 768 output tokens — roughly 60k tokens) does not fit in a local model's
+context window at all. `--workers` defaults to the backend's own concurrency
+cap for the same reason.
 
 ### Anthropic (default)
 
@@ -137,10 +145,50 @@ ANTHROPIC_API_KEY=sk-ant-...
 Uses `claude-haiku-4-5` by default. Override with `ANTHROPIC_MODEL=claude-sonnet-4-6`
 for higher quality at ~10× the cost.
 
-### Ollama (local)
+### vLLM (local GPU)
 
-Run any model locally — no API key, no per-token cost, nothing leaves your
-machine.
+Serves an open-weights model on your own card over vLLM's OpenAI-compatible
+API. No API key, no per-token cost, nothing leaves the machine.
+
+```bash
+# .env
+LLM_BACKEND=vllm
+HF_TOKEN=hf_...                 # google/gemma-3-12b-it is a gated model
+VLLM_MODEL=google/gemma-3-12b-it
+```
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vllm.yml up
+```
+
+Prerequisites on the host: an NVIDIA GPU with a working `nvidia-smi`, the
+container toolkit wired into Docker (`nvidia-ctk runtime configure
+--runtime=docker`, then restart Docker), and the model licence accepted on
+Hugging Face. The ~25 GB of weights is cached in `./data/hf`, so the download
+happens once.
+
+Sizing on a 20 GB card (an RTX 4000 SFF Ada at 70 W is the reference here):
+FP8 weights are ~12 GB, leaving ~6–7 GB of KV cache, which is what sets
+`--max-model-len 16384` and `--max-num-seqs 4`. Ada has native FP8, so
+`--quantization fp8` costs little quality. All of it is overridable:
+
+| variable | default | what it does |
+|---|---|---|
+| `VLLM_MODEL` | `google/gemma-3-12b-it` | served model |
+| `VLLM_MAX_MODEL_LEN` | `16384` | context window |
+| `VLLM_MAX_NUM_SEQS` | `4` | server-side concurrency |
+| `VLLM_GPU_MEMORY_UTILIZATION` | `0.90` | fraction of VRAM vLLM may use |
+| `VLLM_TIMEOUT` | `1800` | client timeout; a 12B model at 70 W is slow |
+
+Where the backend supports guided decoding — vLLM does, via
+`response_format: json_schema` — the batch protocols switch from positional
+text markers (`N. `, `=== ARTICLE N START ===`) to JSON, because a 12B model
+breaks markers far more often than Haiku does. The marker parsers remain as the
+fallback path, so a reply in either shape is understood.
+
+### Ollama (local CPU or small GPU)
+
+Kept because it is the easiest local option for anyone without a big GPU.
 
 ```bash
 # .env
@@ -148,7 +196,6 @@ LLM_BACKEND=ollama
 OLLAMA_HOST=http://your-ollama-host:11434   # default: http://localhost:11434
 OLLAMA_MODEL=qwen2.5:3b                    # default: mistral
 OLLAMA_TIMEOUT=1800                        # seconds; increase for slow hardware
-PAPERNEWS_WORKERS=1                        # set to 1 for CPU inference
 ```
 
 **Model recommendations:** The rewrite step is token-heavy — aim for a model
@@ -160,9 +207,46 @@ that balances speed and quality for your hardware.
 | `mistral:7b` | ~5 GB | Better quality, needs a discrete GPU |
 | `qwen2.5:7b` | ~5 GB | Good quality/speed balance |
 
-CPU inference works but is slow. A discrete GPU with ROCm (AMD) or CUDA
-(NVIDIA) support makes a significant difference. Set `PAPERNEWS_WORKERS=1`
-when running on CPU to avoid hammering Ollama with concurrent requests.
+CPU inference works but is slow. The Ollama backend already limits itself to
+one batch in flight, so there is no need to set `PAPERNEWS_WORKERS` by hand.
+
+## Storage and job queues
+
+Both are pluggable, and both default to **nothing extra to run**:
+
+| | default | optional |
+|---|---|---|
+| storage | SQLite file (`PAPERNEWS_STATE`) | MongoDB — `papernews[mongo]` |
+| jobs | in-process asyncio queue | Redis + arq workers — `papernews[redis]` |
+
+Switch either with a URL:
+
+```bash
+# .env
+PAPERNEWS_STORE=mongodb://mongo:27017/papernews
+PAPERNEWS_QUEUE=redis://redis:6379
+```
+
+and bring up the matching overlay so the service exists:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mongo.yml up
+docker compose -f docker-compose.yml -f docker-compose.redis.yml up
+```
+
+The plain `docker compose up` remains a single container.
+
+Moving between backends is a store-to-store copy through the protocol, so it
+works for any pair:
+
+```bash
+uv run papernews migrate --from state.db --to mongodb://localhost:27017/papernews
+```
+
+The Redis overlay also starts an `arq` worker. That is worth understanding
+even as a single user: with a queue, the web process only *enqueues* work and a
+separate process with `PAPERNEWS_MAX_JOBS` runs it — a process-level cap is the
+only thing that genuinely bounds how many LLM jobs hit one GPU at a time.
 
 ## What it produces
 
@@ -249,7 +333,8 @@ Four stages, each idempotent and resumable:
    the store" + "what's in sources.toml". Same content + same config → same
    cached PDF served instantly.
 
-A background `APScheduler` job runs steps 1–3 every 4 hours (configurable).
+A background `APScheduler` job (`AsyncIOScheduler`, on the app's event loop)
+runs steps 1–3 every 4 hours (configurable).
 The render step is on-demand; the first hit to `/digest.pdf` after an ingest
 builds the PDF and caches it.
 
@@ -262,6 +347,7 @@ builds the PDF and caches it.
 | `GET /preview.png` | page 1 rasterized at 180 DPI                        |
 | `GET /sources` | JSON list of configured sources + latest `fetched_at`   |
 | `GET /healthz` | liveness probe (returns `ok`)                           |
+| `GET /readyz`  | readiness probe — pings the store and parses the config |
 | `POST /ingest` | manual kick of the gather → summarize → rewrite cycle   |
 
 ## Configuring sources
@@ -417,10 +503,58 @@ anything else you can script.
 
 ## Tests
 
-Modest, no-network unittest suite for the web/scheduling/hook behaviour:
+Modest, no-network pytest suite covering the render tokenizer, the
+`since_hours` window, the batch parsers, the web/scheduling/hook behaviour,
+and an end-to-end ingest against a fake LLM backend:
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run pytest
+```
+
+`tests/test_e2e_offline.py` runs the whole pipeline — gather → extract →
+summarize → rewrite → edition → LaTeX — with HTTP served by
+`httpx.MockTransport` and the model replaced by `papernews.testing.FakeBackend`,
+so it needs no network, no GPU and no API key. The xelatex step runs too, but
+only where xelatex is installed.
+
+### Measured on a 20 GB card
+
+Reference box: NVIDIA RTX 4000 SFF Ada (20 GB, **70 W**), 20 cores, 62 GB RAM.
+vLLM 0.26.0 serving `google/gemma-4-12B-it-qat-w4a16-ct` (4-bit QAT,
+compressed-tensors) at `--max-model-len 16384 --max-num-seqs 4
+--kv-cache-dtype fp8`. 44 articles from the sources in this repo.
+
+| stage | wall clock | items | LLM calls | in tok | out tok | out tok/s |
+|---|---|---|---|---|---|---|
+| gather + extract | 61 s | 45 | — | — | — | — |
+| summarize | 38 s | 44 | 11 | 29 147 | 2 252 | 59.9 |
+| rewrite | 807 s | 44 | 44 | 93 147 | 66 699 | 82.6 |
+| cover decorations | ~6 s | — | 1 | — | — | — |
+| render (xelatex, 142 pp.) | ~7 s | 41 | — | — | — | — |
+
+**~15 minutes for a full edition, entirely local, no API key present on the
+box.** Weights take 8.3 GiB, leaving 8.9 GiB of KV cache (139 374 tokens);
+peak VRAM was 18.4 GiB of 20.0, the card sat at its 70 W cap and 73 °C, and
+vLLM held 4 concurrent sequences for most of the run. Engine start is ~53 s
+(40 s of it compilation), so keep the server up between editions.
+
+Quality on that run: 0 empty summaries, 0 empty bodies, 0 `tex_body` failures,
+median summary 31 words (the prompt caps it at 40, and nothing exceeded it).
+No article lost math — 41 of 44 came back with exactly the delimiters they went
+in with, and the other 3 *gained* correct ones where `trafilatura` had
+flattened them (`$\alpha$`, `$\mathbb{R}^2$`).
+
+Two scripts cover what a test suite cannot:
+
+```bash
+# per-stage wall clock, tokens/s and peak VRAM, as a markdown table
+uv run python scripts/benchmark.py --backend vllm --state data/bench.db
+
+# score what an ingest produced — or run the same articles through two
+# backends side by side — including the markup render.py depends on
+# (code fences, inline backticks, math delimiters)
+uv run python scripts/quality_diff.py --state data/bench.db --columns store
+uv run python scripts/quality_diff.py --columns anthropic,vllm --limit 20
 ```
 
 ## Local development
@@ -504,21 +638,38 @@ papernews/
 ├── papernews/
 │   ├── fetch.py          # HN Algolia + RSS feedparser
 │   ├── extract.py        # trafilatura
-│   ├── llm.py            # LLM backend router (Anthropic or Ollama)
+│   ├── llm.py            # LLMBackend protocol: Anthropic / vLLM / Ollama
+│   ├── testing.py        # FakeBackend, so CI needs no GPU or API key
 │   ├── summarize.py      # summarization prompts + batching
 │   ├── rewrite.py        # rewrite prompts + batching
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
-│   ├── store.py          # SQLite article store + queries
+│   ├── config.py         # env-derived configuration (read per call)
+│   ├── jobs.py           # units of work a queue can run
+│   ├── worker.py         # arq worker entry point (optional)
+│   ├── store/            # storage protocol + backends
+│   │   ├── base.py       #   Store protocol + ArticleRow
+│   │   ├── sqlite.py     #   default backend, no extra services
+│   │   └── mongo.py      #   optional: papernews[mongo]
+│   ├── queue/            # job queue protocol + backends
+│   │   ├── base.py       #   JobQueue protocol
+│   │   ├── local.py      #   default: in-process asyncio
+│   │   └── arq_queue.py  #   optional: papernews[redis]
 │   ├── render.py         # Jinja + xelatex
 │   ├── preview.py        # PDF → PNG via pdftoppm
 │   ├── cache.py          # On-disk cache by content hash
 │   ├── cli.py            # papernews command
-│   ├── web.py            # Flask + APScheduler
+│   ├── web.py            # FastAPI + APScheduler (AsyncIOScheduler)
 │   └── template.tex.j2   # the magazine
+├── scripts/
+│   ├── benchmark.py      # per-stage timing, tokens/s, peak VRAM
+│   └── quality_diff.py   # quality report per backend, incl. markup checks
 ├── sources.toml          # configured feeds
 ├── pyproject.toml
 ├── Dockerfile
 ├── docker-compose.yml
+├── docker-compose.vllm.yml   # optional local-GPU vLLM overlay
+├── docker-compose.mongo.yml  # optional MongoDB overlay
+├── docker-compose.redis.yml  # optional Redis + arq worker overlay
 └── data/                 # gitignored — your SQLite + cached PDFs
 ```
 

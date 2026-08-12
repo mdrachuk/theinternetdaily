@@ -5,7 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 # System packages: a minimal TeX Live (xelatex + fontspec + microtype + multicol
-# + amsmath + needspace + Latin Modern) and poppler for previews. We no longer
+# + amsmath + needspace + Latin Modern) and poppler for previews. fonts-cmu is
+# Computer Modern Unicode: the same design as Latin Modern but with Cyrillic,
+# without which a Russian-language headline renders as blank space. We no longer
 # ask for Python here: bookworm ships 3.11 and the project needs 3.14, so uv
 # downloads and manages the interpreter itself (see below). texlive-latex-extra
 # still drags in a system python3 for its own scripts — papernews never uses it.
@@ -14,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         texlive-xetex texlive-fonts-recommended texlive-latex-extra \
         texlive-lang-european \
         lmodern \
+        fonts-cmu \
         poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -56,11 +59,14 @@ RUN uv python install 3.14
 # Dependencies first, from the lockfile, so the layer caches across source
 # edits. --frozen fails the build if uv.lock has drifted from pyproject.toml.
 COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-install-project --no-dev
+# --all-extras so the optional store/queue backends (pymongo, arq) are
+# present when a compose overlay switches to them. Both are small and the
+# defaults still touch neither.
+RUN uv sync --frozen --no-install-project --no-dev --all-extras
 
 COPY papernews ./papernews
 COPY sources.toml ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --all-extras
 
 # State + cache live on a mounted volume.
 RUN mkdir -p /data/archive/cache
@@ -70,12 +76,10 @@ ENV PAPERNEWS_CACHE=/data/archive/cache
 
 EXPOSE 8000
 
-# Use gunicorn with one worker; APScheduler runs in-process, multiple workers
-# would multiply ingest runs.
-CMD ["/opt/venv/bin/gunicorn", \
-     "--workers", "1", \
-     "--threads", "8", \
-     "--bind", "0.0.0.0:8000", \
-     "--timeout", "900", \
-     "--graceful-timeout", "30", \
-     "papernews.web:app"]
+# One uvicorn worker: APScheduler runs in-process, so multiple workers would
+# multiply ingest runs. Concurrency comes from the event loop now, not threads.
+CMD ["/opt/venv/bin/uvicorn", \
+     "papernews.web:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--timeout-graceful-shutdown", "30"]

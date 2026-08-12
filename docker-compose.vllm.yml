@@ -1,0 +1,73 @@
+# Optional local LLM: vLLM serving Gemma on this machine's GPU.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml up
+#
+# Kept out of the default compose file on purpose: that one has to stay
+# CPU-only and portable. This one needs an NVIDIA GPU, the container toolkit
+# (`nvidia-ctk runtime configure --runtime=docker` + a Docker restart), and a
+# Hugging Face token, because google/gemma-3-12b-it is a gated model — accept
+# the licence on the model page, then put HF_TOKEN in .env.
+#
+# Sizing, for a 20 GB card (RTX 4000 SFF Ada, 70 W):
+#   FP8 weights are ~12 GB, which leaves ~6-7 GB for the KV cache. That is what
+#   forces --max-model-len 16384 and --max-num-seqs 4, and why the vLLM backend
+#   ships much smaller batch limits than the Anthropic one (papernews/llm.py).
+#   Ada has native FP8, so --quantization fp8 costs little quality.
+#
+# Serving a pre-quantized checkpoint instead? Set the matching flag, e.g. a
+# w4a16 QAT release: VLLM_QUANTIZATION=compressed-tensors. Smaller weights buy
+# a bigger KV cache, so VLLM_MAX_MODEL_LEN can go up with it.
+services:
+  papernews:
+    environment:
+      - LLM_BACKEND=vllm
+      - VLLM_BASE_URL=http://vllm:8000/v1
+      - VLLM_MODEL=${VLLM_MODEL:-google/gemma-3-12b-it}
+      # Match the app-side semaphore to the server's own concurrency.
+      - VLLM_MAX_CONCURRENCY=${VLLM_MAX_NUM_SEQS:-4}
+      - VLLM_TIMEOUT=${VLLM_TIMEOUT:-1800}
+    depends_on:
+      vllm:
+        condition: service_healthy
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: papernews-vllm
+    restart: unless-stopped
+    command: >
+      --model ${VLLM_MODEL:-google/gemma-3-12b-it}
+      --quantization ${VLLM_QUANTIZATION:-fp8}
+      --kv-cache-dtype ${VLLM_KV_CACHE_DTYPE:-fp8}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-16384}
+      --max-num-seqs ${VLLM_MAX_NUM_SEQS:-4}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    volumes:
+      # ~25 GB of weights: cache them on the host so the download happens once.
+      # Point HF_CACHE at an existing ~/.cache/huggingface to reuse what you
+      # already have (and the token in it) instead of downloading again.
+      - ${HF_CACHE:-./data/hf}:/root/.cache/huggingface
+    # vLLM's workers talk over shared memory; the default 64 MB is not enough.
+    ipc: host
+    ports:
+      # Exposed for benchmarking and for `curl /v1/models`; the app reaches it
+      # over the compose network either way.
+      - "${VLLM_PORT:-8001}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      # No curl in the image; python3 is right there.
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 20s
+      timeout: 5s
+      # Generous: the first start downloads ~25 GB and then quantizes.
+      retries: 90
+      start_period: 60s

@@ -44,6 +44,35 @@ kind = "rss"
 url = "https://feeds.macrumors.com/MacRumors-All"
 limit = 15
 
+# --- News ----------------------------------------------------------------
+# Fast-moving, so each carries a since_hours window: without one, rows already
+# in the store keep reappearing in the edition long after they stop being news
+# (the window is re-applied at render time, not just at gather time).
+
+[[source]]
+name = "The Guardian"
+kind = "rss"
+url = "https://www.theguardian.com/international/rss"
+limit = 8
+since_hours = 24
+
+[[source]]
+name = "Kyiv Independent"
+kind = "rss"
+url = "https://kyivindependent.com/news-archive/rss/"
+limit = 8
+since_hours = 24
+
+[[source]]
+name = "Meduza"
+kind = "rss"
+# Meduza's Russian edition. The LLM stages keep each article's source
+# language, so bodies and summaries stay in Russian, like the feed headlines —
+# hence the CMU font fallback in the template for Cyrillic.
+url = "https://meduza.io/rss/all"
+limit = 6
+since_hours = 48
+
 # --- Aggregator (last on purpose; mostly social, occasional gems) --------
 
 [[source]]
