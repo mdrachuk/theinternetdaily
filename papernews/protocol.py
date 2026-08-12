@@ -100,6 +100,31 @@ def _outermost_object(reply: str) -> str | None:
     return blob[start:end + 1]
 
 
+def _salvage_items(blob: str) -> list[Any]:
+    """Pull the complete objects out of a truncated JSON array.
+
+    A reply that runs out of output budget mid-array is not valid JSON, but the
+    items before the cut are intact. Recovering them turns "one runaway item
+    costs the whole batch" into "one runaway item costs one article" — which,
+    with a batch of 4, is the difference between 0 and 3 usable summaries.
+    """
+    decoder = json.JSONDecoder()
+    items: list[Any] = []
+    i = blob.find("{")
+    while i >= 0:
+        try:
+            obj, end = decoder.raw_decode(blob, i)
+        except ValueError:
+            i = blob.find("{", i + 1)
+            continue
+        if isinstance(obj, dict) and "id" in obj:
+            items.append(obj)
+            i = blob.find("{", end)
+        else:
+            i = blob.find("{", i + 1)
+    return items
+
+
 def parse_json_batch(
     reply: str, container: str, field: str, n: int
 ) -> list[str] | None:
@@ -115,12 +140,16 @@ def parse_json_batch(
         return None
     try:
         data: Any = json.loads(blob)
+        items = (data.get(container) or []) if isinstance(data, dict) else None
     except ValueError:
-        return None
-    if not isinstance(data, dict):
+        # Truncated: keep whatever closed before the cut.
+        items = _salvage_items(blob)
+        if not items:
+            return None
+    if items is None:
         return None
     out = [""] * n
-    for item in data.get(container) or []:
+    for item in items:
         if not isinstance(item, dict):
             continue
         try:

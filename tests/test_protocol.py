@@ -118,3 +118,36 @@ def test_escape_sequences_inside_fenced_code_are_left_alone():
 def test_escape_sequences_inside_inline_code_are_left_alone():
     body = 'The separator is `\\n` in that format.'
     assert repair_latex_escapes(body) == body
+
+
+# --- truncated batches -----------------------------------------------------
+
+def test_a_truncated_array_keeps_the_items_that_closed():
+    """Witness: one runaway summary in a batch of 4 ran the reply into the
+    output cap, and all four articles were lost. The three that finished are
+    right there in the text."""
+    reply = (
+        '{"summaries": [{"id": 0, "summary": "first"}, '
+        '{"id": 1, "summary": "second"}, '
+        '{"id": 2, "summary": "third"}, '
+        '{"id": 3, "summary": "fourth and then it keeps going and go'
+    )
+    assert parse_json_batch(reply, "summaries", "summary", 4) == [
+        "first", "second", "third", "",
+    ]
+
+
+def test_salvage_does_not_kick_in_for_complete_replies():
+    reply = '{"summaries": [{"id": 0, "summary": "only"}]}'
+    assert parse_json_batch(reply, "summaries", "summary", 1) == ["only"]
+
+
+def test_a_reply_truncated_before_any_item_closes_is_still_none():
+    """Nothing usable means fall back to the text protocol, not invent data."""
+    assert parse_json_batch('{"summaries": [{"id": 0, "summ',
+                            "summaries", "summary", 2) is None
+
+
+def test_salvaged_items_are_still_repaired():
+    reply = r'{"articles": [{"id": 0, "body": "$\frac{a}{b}$"}, {"id": 1, "bo'
+    assert parse_json_batch(reply, "articles", "body", 2) == ["$\\frac{a}{b}$", ""]
