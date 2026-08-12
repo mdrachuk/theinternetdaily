@@ -16,6 +16,7 @@ from .llm import BatchLimits, Usage
 FAKE_LIMITS = BatchLimits(
     summarize_batch=4,
     summarize_max_chars=2000,
+    summary_output_tokens=300,
     rewrite_batch=2,
     rewrite_max_chars=4000,
     rewrite_output_tokens=2048,

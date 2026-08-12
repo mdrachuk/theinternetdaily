@@ -210,3 +210,21 @@ async def test_a_truncated_reply_is_reported_not_swallowed(caplog):
     with caplog.at_level("WARNING"):
         await backend.chat("sys", "user", max_tokens=64)
     assert "output cap" in caplog.text
+
+
+async def test_summarize_asks_for_a_per_item_budget_from_the_backend():
+    """A flat 300-tokens-per-item cap let one rambling summary truncate the
+    reply and take its whole batch down with it."""
+    from papernews.summarize import summarize_batch
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, content=_sse(
+            {"choices": [{"delta": {"content": '{"summaries":[]}'}}]}
+        ))
+
+    backend = VLLMBackend(client=_vllm_client(handler))
+    await summarize_batch(backend, [("t1", "b1"), ("t2", "b2")])
+    assert seen["max_tokens"] == VLLM_LIMITS.summary_output_tokens * 2

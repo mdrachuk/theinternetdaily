@@ -106,7 +106,7 @@ async def summarize_batch(
     reply = await backend.chat(
         _SYSTEM_JSON if use_json else _SYSTEM,
         user_msg,
-        max_tokens=300 * len(items),
+        max_tokens=backend.limits.summary_output_tokens * len(items),
         json_schema=SUMMARY_SCHEMA if use_json else None,
     )
     return parse_summaries(reply.strip(), len(items))

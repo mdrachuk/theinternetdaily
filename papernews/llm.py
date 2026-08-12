@@ -43,6 +43,7 @@ class BatchLimits:
     """
     summarize_batch: int
     summarize_max_chars: int
+    summary_output_tokens: int
     rewrite_batch: int
     rewrite_max_chars: int
     rewrite_output_tokens: int
@@ -97,6 +98,7 @@ class LLMBackend(Protocol):
 ANTHROPIC_LIMITS = BatchLimits(
     summarize_batch=8,
     summarize_max_chars=4000,
+    summary_output_tokens=300,
     rewrite_batch=8,
     rewrite_max_chars=16000,
     rewrite_output_tokens=4096,
@@ -173,6 +175,10 @@ class AnthropicBackend:
 VLLM_LIMITS = BatchLimits(
     summarize_batch=4,
     summarize_max_chars=3000,
+    # A 40-word summary needs ~60 tokens; the rest is headroom for a model that
+    # starts rambling. One that runs past even this truncates the reply, which
+    # is why parse_json_batch salvages the items that did close.
+    summary_output_tokens=512,
     rewrite_batch=1,
     rewrite_max_chars=12000,
     rewrite_output_tokens=8192,
@@ -307,6 +313,7 @@ class VLLMBackend:
 OLLAMA_LIMITS = BatchLimits(
     summarize_batch=2,
     summarize_max_chars=2500,
+    summary_output_tokens=512,
     rewrite_batch=1,
     rewrite_max_chars=8000,
     rewrite_output_tokens=6144,
