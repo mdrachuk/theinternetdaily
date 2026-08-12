@@ -10,25 +10,42 @@
 ]{geometry}
 
 \usepackage{fontspec}
-\setmainfont{Latin Modern Roman}[
-  Extension      = .otf,
-  UprightFont    = lmroman10-regular,
-  ItalicFont     = lmroman10-italic,
-  BoldFont       = lmroman10-bold,
-  BoldItalicFont = lmroman10-bolditalic,
-]
-\setsansfont{Latin Modern Sans}[
-  Extension   = .otf,
-  UprightFont = lmsans10-regular,
-  ItalicFont  = lmsans10-oblique,
-  BoldFont    = lmsans10-bold,
-]
-\setmonofont{Latin Modern Mono}[
-  Extension   = .otf,
-  UprightFont = lmmono10-regular,
-  ItalicFont  = lmmono10-italic,
-  BoldFont    = lmmonolt10-bold,
-]
+% Computer Modern Unicode where it is installed, Latin Modern otherwise.
+% The two are the same Knuth design, so the page looks identical either way —
+% but CMU carries Cyrillic and Latin Modern does not. Without it, a headline
+% from a Russian-language source (Meduza) renders as blank space: xelatex logs
+% "Missing character" for every glyph and prints nothing at all.
+\IfFontExistsTF{CMU Serif}{%
+  \setmainfont{CMU Serif}
+}{%
+  \setmainfont{Latin Modern Roman}[
+    Extension      = .otf,
+    UprightFont    = lmroman10-regular,
+    ItalicFont     = lmroman10-italic,
+    BoldFont       = lmroman10-bold,
+    BoldItalicFont = lmroman10-bolditalic,
+  ]
+}
+\IfFontExistsTF{CMU Sans Serif}{%
+  \setsansfont{CMU Sans Serif}
+}{%
+  \setsansfont{Latin Modern Sans}[
+    Extension   = .otf,
+    UprightFont = lmsans10-regular,
+    ItalicFont  = lmsans10-oblique,
+    BoldFont    = lmsans10-bold,
+  ]
+}
+\IfFontExistsTF{CMU Typewriter Text}{%
+  \setmonofont{CMU Typewriter Text}
+}{%
+  \setmonofont{Latin Modern Mono}[
+    Extension   = .otf,
+    UprightFont = lmmono10-regular,
+    ItalicFont  = lmmono10-italic,
+    BoldFont    = lmmonolt10-bold,
+  ]
+}
 % microtype's letter-spacing extension is xetex-incompatible on many TeX
 % Live versions, so we skip that feature and only use protrusion/expansion.
 \usepackage[final]{microtype}

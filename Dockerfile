@@ -5,7 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 # System packages: a minimal TeX Live (xelatex + fontspec + microtype + multicol
-# + amsmath + needspace + Latin Modern) and poppler for previews. We no longer
+# + amsmath + needspace + Latin Modern) and poppler for previews. fonts-cmu is
+# Computer Modern Unicode: the same design as Latin Modern but with Cyrillic,
+# without which a Russian-language headline renders as blank space. We no longer
 # ask for Python here: bookworm ships 3.11 and the project needs 3.14, so uv
 # downloads and manages the interpreter itself (see below). texlive-latex-extra
 # still drags in a system python3 for its own scripts — papernews never uses it.
@@ -14,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         texlive-xetex texlive-fonts-recommended texlive-latex-extra \
         texlive-lang-european \
         lmodern \
+        fonts-cmu \
         poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
