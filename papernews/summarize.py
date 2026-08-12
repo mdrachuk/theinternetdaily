@@ -14,7 +14,7 @@ _SYSTEM = (
     "- The piece may be a news article, blog post, Show HN, discussion thread, fiction, satire, opinion, product launch, release notes, paper, or anything else. Summarize whatever it is. Fiction → summarize the plot. Show HN → say what the project does. Opinion → state the position.\n"
     "- Be terse and factual. State what the piece is about and the main point or takeaway. No filler. No 'this article discusses', 'the author argues', 'the piece explores'.\n"
     "- Hard cap: 40 words across the 2 sentences.\n"
-    "- Output language: ENGLISH, regardless of the source language. Translate if needed.\n"
+    "- Output language: the SAME language the article is written in. Do NOT translate. A Russian article gets a Russian summary, a German article a German one.\n"
     "- Output ONLY the summary text. No preamble, no quotes, no markdown, no questions, no meta-commentary.\n"
     "\n"
     "BATCH MODE:\n"

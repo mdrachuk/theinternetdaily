@@ -146,6 +146,26 @@ def _chunks(seq: list, n: int) -> list[list]:
     return [seq[i:i + n] for i in range(0, len(seq), n)]
 
 
+def _chunks_by_source(rows: list[ArticleRow], n: int) -> list[list[ArticleRow]]:
+    """Chunk pending rows into batches that never mix sources.
+
+    One LLM call carries several articles, and the model treats them as one
+    piece of work: put a Russian article in a batch with three English ones and
+    it summarizes all four in English, ignoring the instruction to keep each
+    article's own language. Batching per source keeps every call
+    single-language, since a source is one publication.
+
+    It also shrinks the blast radius of a bad reply to a single source.
+    """
+    groups: dict[str, list[ArticleRow]] = {}
+    for row in rows:
+        groups.setdefault(row.source, []).append(row)
+    batches: list[list[ArticleRow]] = []
+    for items in groups.values():
+        batches.extend(_chunks(items, n))
+    return batches
+
+
 async def _run_llm_stage(
     stage: str,
     pending: list[ArticleRow],
@@ -163,7 +183,7 @@ async def _run_llm_stage(
     must not throw away 42 articles' worth of GPU time. Every stage is
     resumable — whatever was stored is simply not pending next time.
     """
-    batches = _chunks(pending, batch_size)
+    batches = _chunks_by_source(pending, batch_size)
     _log(f"[{stage}] {len(pending)} pending in {len(batches)} batch(es) "
          f"of {batch_size} (workers={workers})")
     sem = asyncio.Semaphore(workers)

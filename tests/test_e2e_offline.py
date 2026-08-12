@@ -208,3 +208,22 @@ async def test_pdf_actually_builds(pipeline, tmp_path):
     pdf = await build_pdf("2026-08-08", articles, tmp_path / "out")
     assert pdf.exists()
     assert pdf.read_bytes().startswith(b"%PDF")
+
+
+async def test_batches_never_mix_sources(pipeline):
+    """A batch is one LLM call and the model treats it as one piece of work:
+    mixing a Russian article in with English ones made it summarize all of them
+    in English, overriding the per-article language rule."""
+    from papernews.cli import _chunks_by_source
+    from papernews.store import ArticleRow
+
+    rows = [
+        ArticleRow(id=f"{src}{i}", url=f"u{src}{i}", title="t", source=src)
+        for src in ("Meduza", "The Guardian")
+        for i in range(3)
+    ]
+    # Interleave, so a naive chunker would straddle the boundary.
+    rows = [rows[0], rows[3], rows[1], rows[4], rows[2], rows[5]]
+    for batch in _chunks_by_source(rows, 4):
+        assert len({r.source for r in batch}) == 1, batch
+    assert sum(len(b) for b in _chunks_by_source(rows, 4)) == len(rows)
