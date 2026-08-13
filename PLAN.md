@@ -1,4 +1,4 @@
-# papernews — plan
+# The Internet Daily — plan
 
 **This repo stays single-user, open-source, and self-hostable.** It also
 becomes a *library*: a separate downstream repo will import it and package the
@@ -28,7 +28,7 @@ downstream repo can wrap the pipeline without forking it.
   OpenAI-compatible API, with a benchmark gate before committing (step 5).
 - **Scope**: single-user. No auth, no tenants, no user table in this repo.
 - **Multi-tenancy strategy**: the library never knows about tenants. It is
-  *instance-scoped* — a `Papernews` object owns one config + one store. The
+  *instance-scoped* — an `InternetDaily` object owns one config + one store. The
   downstream repo achieves multi-user by constructing one instance per user.
   This is the cheapest possible seam and it keeps this repo honestly
   single-user.
@@ -85,7 +85,7 @@ step 3 anyway, so wrapping it in `to_thread` is throwaway work.
 `test_render.py` / `test_since_hours.py` are mostly pure functions and survive
 with minimal edits.
 
-**Exit criteria**: `papernews build` produces the same PDF from the same
+**Exit criteria**: `tid build` produces the same PDF from the same
 store; `pytest` green; no `requests` or `ThreadPoolExecutor` left.
 
 ---
@@ -103,7 +103,7 @@ downstream imports them instead of reimplementing them.
 a straight port and deletes the protocol layer, at the cost of a heavier
 self-host story.)*
 
-**Storage protocol** — `papernews/store/base.py`
+**Storage protocol** — `tid/store/base.py`
 ```python
 class Store(Protocol):
     async def exists(self, url: str, title: str) -> bool: ...
@@ -119,9 +119,9 @@ class Store(Protocol):
 - Rows become a typed `ArticleRow` dataclass, not `sqlite3.Row`. `cli.py`
   currently does `r["body"]`-style access in several places; that coupling has
   to go for any non-SQLite backend to work.
-- `papernews/store/sqlite.py` — the current implementation, made async via
+- `tid/store/sqlite.py` — the current implementation, made async via
   `to_thread` (or `aiosqlite`). **Default, zero extra services.**
-- `papernews/store/mongo.py` — behind `pip install papernews[mongo]`, using
+- `tid/store/mongo.py` — behind `pip install tid[mongo]`, using
   `pymongo`'s `AsyncMongoClient` (Motor is EOL — do not add it). Indexes:
   unique `url_hash`, `title_norm`, `(source, sort_date)`, partial indexes on
   `summary: null` / `body: null`. Denormalize a `sort_date` field at insert
@@ -131,14 +131,14 @@ class Store(Protocol):
   user's instance at its own database/collection prefix — which the Mongo
   store takes as a constructor argument.
 
-**Queue protocol** — `papernews/queue/base.py`
+**Queue protocol** — `tid/queue/base.py`
 ```python
 class JobQueue(Protocol):
     async def enqueue(self, job: str, *args, job_id: str | None = None) -> None: ...
 ```
-- `papernews/queue/local.py` — in-process `asyncio` execution with a
+- `tid/queue/local.py` — in-process `asyncio` execution with a
   semaphore. **Default**; a single-user box does not need Redis.
-- `papernews/queue/arq_queue.py` — `arq` + Redis behind `papernews[redis]`,
+- `tid/queue/arq_queue.py` — `arq` + Redis behind `tid[redis]`,
   for the downstream and for anyone who wants durable jobs. Idempotency via
   arq's `_job_id`.
 
@@ -146,7 +146,7 @@ class JobQueue(Protocol):
 `docker-compose.mongo.yml` / `docker-compose.redis.yml` overlays for the
 optional backends, so `docker compose up` stays a one-liner.
 
-**Migration**: `papernews migrate --from sqlite --to mongo` as a store-to-store
+**Migration**: `tid migrate --from sqlite --to mongo` as a store-to-store
 copy through the protocol — useful to the downstream too.
 
 **Exit criteria**: the same test suite passes against both stores (one
@@ -271,7 +271,7 @@ Two real bugs came out of this, both invisible until a real edition was built:
    JSON — `\f` is a form feed — so the body reached xelatex as `A ^^Lrac{…}`
    and the build died. Only `\f \b \n \r \t` are exposed (every other LaTeX
    command is not a legal JSON escape, so guided decoding forces a doubled
-   backslash). Repaired in `papernews/protocol.py`, with the mirror-image case
+   backslash). Repaired in `tid/protocol.py`, with the mirror-image case
    — a double-escaped line break printing a literal `\n` mid-sentence — handled
    too, outside code spans.
 2. **The rewrite output budget was a flat 4096 tokens.** Rewriting is ~1:1, so
@@ -287,8 +287,8 @@ cache.
 ## Step 6 — library API hardening
 
 The pivot. Right now the package is a CLI with importable helpers: the
-downstream would have to import `papernews.cli._collect_current_edition` and
-`papernews.cli._gather_decorations` (both private, both what `web.py` already
+downstream would have to import `tid.cli._collect_current_edition` and
+`tid.cli._gather_decorations` (both private, both what `web.py` already
 does) and set environment variables to configure anything. That is not a
 library.
 
@@ -302,11 +302,11 @@ library.
 - Every `os.environ.get` moves into one `Config` object (pydantic-settings,
   constructed from env *by the CLI*, constructed explicitly by a downstream).
 
-**Public API** — `papernews/__init__.py` (currently empty)
+**Public API** — `tid/__init__.py` (currently empty)
 ```python
-from papernews import Papernews, Config, SourceConfig, Edition, Article
+from tid import InternetDaily, Config, SourceConfig, Edition, Article
 
-pn = Papernews(config=Config(...), store=..., llm=..., queue=...)
+pn = InternetDaily(config=Config(...), store=..., llm=..., queue=...)
 await pn.ingest()                    # gather + summarize + rewrite
 edition = await pn.current_edition() # the render-ready article set
 pdf     = await pn.render(edition, out_dir)
@@ -333,7 +333,7 @@ A `SourceConfig` dataclass with validation, plus `SourceConfig.from_toml`,
 makes the downstream's own config UI trivial and kills a class of bug.
 
 **Packaging**
-- Optional extras: `papernews[mongo]`, `[redis]`, `[anthropic]`, `[vllm]`,
+- Optional extras: `tid[mongo]`, `[redis]`, `[anthropic]`, `[vllm]`,
   `[web]`. Core install should not pull Flask/FastAPI for someone who only
   wants the CLI.
 - Ship `py.typed`, run `mypy`/`pyright` in CI.
@@ -361,7 +361,7 @@ configuration.
 (triple-backtick fences, inline backticks, LaTeX math) and `render.py` has
 ~150 lines of careful tokenizing to turn it into LaTeX. The browser needs the
 same tokenizer emitting HTML. Do **not** write a second parser — lift the
-stash/expand logic into `papernews/markup.py` with two emitters (`to_tex`,
+stash/expand logic into `tid/markup.py` with two emitters (`to_tex`,
 `to_html`), or the PDF and the page drift apart on exactly the inputs that are
 hardest to get right. Math via vendored KaTeX (offline, no CDN). `markup.py`
 is also a useful public export for the downstream.
@@ -405,7 +405,7 @@ LLM jobs at once, and the downstream will have many more of them queued.
 **Default (single-user)**: in-process `asyncio` workers with an
 `asyncio.Semaphore` sized to vLLM's `max_num_seqs`. No Redis required.
 
-**Optional (`papernews[redis]`, and what the downstream uses)**: separate arq
+**Optional (`tid[redis]`, and what the downstream uses)**: separate arq
 worker processes per queue — process-level `max_jobs` is what actually
 guarantees the GPU is not oversubscribed, where a semaphore in a shared
 process does not:
@@ -479,7 +479,7 @@ Owned by the downstream multi-user repo, and each has a named seam above:
 | Email/push delivery | `Delivery` |
 | Branding per user | `Renderer` / template dir |
 
-If any of these needs a change *inside* `papernews` to work, that is a bug in
+If any of these needs a change *inside* `tid` to work, that is a bug in
 the seam — fix the seam, don't add the feature here.
 
 ---
@@ -500,4 +500,4 @@ the seam — fix the seam, don't add the feature here.
   single-file config throughout; it needs a full pass, plus a new
   `docs/library.md` for downstream consumers.
 - **Rollout**: every step leaves a working `docker compose up` and a working
-  `papernews build`.
+  `tid build`.

@@ -12,7 +12,7 @@ Takes the same N articles through each column and writes a markdown report.
 A column is either a backend name (which runs it) or the literal `store`,
 meaning "use the summary and body already saved for that article" — useful
 after a benchmark run, and the only option when there is no second API key.
-Beyond eyeballing the prose, it checks the things `papernews/render.py` depends
+Beyond eyeballing the prose, it checks the things `tid/render.py` depends
 on, because a model that mangles them produces *broken PDFs*, not merely worse
 writing:
 
@@ -30,11 +30,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from papernews.llm import make_backend
-from papernews.render import tex_body
-from papernews.rewrite import rewrite_batch
-from papernews.store import open_store
-from papernews.summarize import summarize_batch
+from tid.llm import make_backend
+from tid.render import tex_body
+from tid.rewrite import rewrite_batch
+from tid.store import open_store
+from tid.summarize import summarize_batch
 
 _FENCE_RE = re.compile(r"```")
 _INLINE_RE = re.compile(r"`[^`\n]+`")

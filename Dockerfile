@@ -1,4 +1,4 @@
-# papernews container: TeX Live + Python + rmapi + the project
+# The Internet Daily container: TeX Live + Python + rmapi + the project
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -10,7 +10,7 @@ ENV PYTHONUNBUFFERED=1
 # without which a Russian-language headline renders as blank space. We no longer
 # ask for Python here: bookworm ships 3.11 and the project needs 3.14, so uv
 # downloads and manages the interpreter itself (see below). texlive-latex-extra
-# still drags in a system python3 for its own scripts — papernews never uses it.
+# still drags in a system python3 for its own scripts — the app never uses it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl \
         texlive-xetex texlive-fonts-recommended texlive-latex-extra \
@@ -64,22 +64,22 @@ COPY pyproject.toml uv.lock .python-version ./
 # defaults still touch neither.
 RUN uv sync --frozen --no-install-project --no-dev --all-extras
 
-COPY papernews ./papernews
+COPY tid ./tid
 COPY sources.toml ./
 RUN uv sync --frozen --no-dev --all-extras
 
 # State + cache live on a mounted volume.
 RUN mkdir -p /data/archive/cache
-ENV PAPERNEWS_STATE=/data/state.db
-ENV PAPERNEWS_CONFIG=/app/sources.toml
-ENV PAPERNEWS_CACHE=/data/archive/cache
+ENV TID_STATE=/data/state.db
+ENV TID_CONFIG=/app/sources.toml
+ENV TID_CACHE=/data/archive/cache
 
 EXPOSE 8000
 
 # One uvicorn worker: APScheduler runs in-process, so multiple workers would
 # multiply ingest runs. Concurrency comes from the event loop now, not threads.
 CMD ["/opt/venv/bin/uvicorn", \
-     "papernews.web:app", \
+     "tid.web:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
      "--timeout-graceful-shutdown", "30"]

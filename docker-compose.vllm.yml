@@ -11,14 +11,14 @@
 # Sizing, for a 20 GB card (RTX 4000 SFF Ada, 70 W):
 #   FP8 weights are ~12 GB, which leaves ~6-7 GB for the KV cache. That is what
 #   forces --max-model-len 16384 and --max-num-seqs 4, and why the vLLM backend
-#   ships much smaller batch limits than the Anthropic one (papernews/llm.py).
+#   ships much smaller batch limits than the Anthropic one (tid/llm.py).
 #   Ada has native FP8, so --quantization fp8 costs little quality.
 #
 # Serving a pre-quantized checkpoint instead? Set the matching flag, e.g. a
 # w4a16 QAT release: VLLM_QUANTIZATION=compressed-tensors. Smaller weights buy
 # a bigger KV cache, so VLLM_MAX_MODEL_LEN can go up with it.
 services:
-  papernews:
+  tid:
     environment:
       - LLM_BACKEND=vllm
       - VLLM_BASE_URL=http://vllm:8000/v1
@@ -32,7 +32,7 @@ services:
 
   vllm:
     image: vllm/vllm-openai:latest
-    container_name: papernews-vllm
+    container_name: tid-vllm
     restart: unless-stopped
     command: >
       --model ${VLLM_MODEL:-google/gemma-3-12b-it}

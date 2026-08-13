@@ -21,8 +21,8 @@ from unittest import mock
 import httpx
 import pytest
 
-import papernews.jobs as jobs
-import papernews.web as web
+import tid.jobs as jobs
+import tid.web as web
 
 
 async def _noop() -> None:

@@ -6,7 +6,7 @@ a drop-in — the old `row["body"]` access pattern silently required a mapping
 type and leaked the schema into `cli.py`.
 
 SQLite is the default and needs no extra services. Mongo lives in
-`papernews.store.mongo` behind `pip install papernews[mongo]`.
+`tid.store.mongo` behind `pip install tid[mongo]`.
 """
 from __future__ import annotations
 
@@ -130,7 +130,7 @@ class Store(Protocol):
     async def max_fetched_at(self) -> str: ...
     async def counts(self) -> dict[str, int]: ...
 
-    # --- bulk copy (used by `papernews migrate`) ------------------------
+    # --- bulk copy (used by `tid migrate`) ------------------------
     async def all_rows(self) -> list[ArticleRow]: ...
     async def upsert_rows(self, rows: list[ArticleRow]) -> int: ...
 

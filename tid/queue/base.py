@@ -1,8 +1,8 @@
 """Job queue protocol.
 
 The pipeline enqueues named jobs; how they run is the backend's business. The
-default (`papernews.queue.local`) runs them in-process on the event loop under
-a semaphore — a single-user box does not need Redis. `papernews.queue.arq_queue`
+default (`tid.queue.local`) runs them in-process on the event loop under
+a semaphore — a single-user box does not need Redis. `tid.queue.arq_queue`
 puts them on Redis for durable, cross-process execution, which is what a
 downstream multi-user service and a shared GPU actually need.
 """

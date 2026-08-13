@@ -1,6 +1,6 @@
 """The list of every edition that has been built.
 
-The cache (`papernews.cache`) is keyed by a content hash, which answers "is
+The cache (`tid.cache`) is keyed by a content hash, which answers "is
 this edition still current?" but not "what did we publish last week" — the
 key carries no date and the files carry no metadata. So each build drops a
 small JSON sidecar next to its PDF, and the archive is those sidecars sorted

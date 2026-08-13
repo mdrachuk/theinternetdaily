@@ -11,7 +11,7 @@ These tests pin the fix while making sure genuine inline math still renders.
 """
 from __future__ import annotations
 
-from papernews.render import tex_body
+from tid.render import tex_body
 
 
 def test_dollar_in_inline_code_is_escaped_not_mathified():

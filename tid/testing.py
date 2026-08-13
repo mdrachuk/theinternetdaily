@@ -1,7 +1,7 @@
 """Test doubles, shipped so that CI — here and downstream — needs no GPU, no
 API key and no network.
 
-    from papernews.testing import FakeBackend
+    from tid.testing import FakeBackend
     backend = FakeBackend()
     await cmd_ingest(client, store, backend, sources)
 """

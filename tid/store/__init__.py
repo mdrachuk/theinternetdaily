@@ -1,8 +1,8 @@
 """Article storage: a protocol, a SQLite default, and an optional Mongo backend.
 
-    from papernews.store import open_store
+    from tid.store import open_store
     store = open_store("state.db")                       # SQLite (default)
-    store = open_store("mongodb://localhost/papernews")  # needs [mongo]
+    store = open_store("mongodb://localhost/tid")  # needs [mongo]
 """
 from __future__ import annotations
 
@@ -37,9 +37,9 @@ def open_store(url: str | Any) -> Store:
     Accepted forms::
 
         state.db                                  SQLite file
-        sqlite:///var/lib/papernews/state.db      SQLite file (absolute)
-        mongodb://host:27017/papernews            Mongo, db from the path
-        mongodb://host/papernews?collection=feed  Mongo, explicit collection
+        sqlite:///var/lib/tid/state.db      SQLite file (absolute)
+        mongodb://host:27017/tid            Mongo, db from the path
+        mongodb://host/tid?collection=feed  Mongo, explicit collection
 
     Constructing a store never does I/O beyond opening the SQLite file, so
     this is safe to call from synchronous setup code.
@@ -51,7 +51,7 @@ def open_store(url: str | Any) -> Store:
         from .mongo import MongoStore
 
         parts = urlsplit(text)
-        database = parts.path.lstrip("/") or "papernews"
+        database = parts.path.lstrip("/") or "tid"
         query = parse_qs(parts.query)
         collection = query.pop("collection", ["article"])[0]
         # `collection` is ours, not a driver option — pymongo warns about

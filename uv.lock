@@ -511,56 +511,6 @@ wheels = [
 ]
 
 [[package]]
-name = "papernews"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "anthropic" },
-    { name = "apscheduler" },
-    { name = "fastapi" },
-    { name = "feedparser" },
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "trafilatura" },
-    { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-mongo = [
-    { name = "pymongo" },
-]
-redis = [
-    { name = "arq" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anthropic", specifier = ">=0.40" },
-    { name = "apscheduler", specifier = ">=3.10" },
-    { name = "arq", marker = "extra == 'redis'", specifier = ">=0.26" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "feedparser", specifier = ">=6.0" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.9" },
-    { name = "trafilatura", specifier = ">=1.12" },
-    { name = "uvicorn", specifier = ">=0.30" },
-]
-provides-extras = ["mongo", "redis"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-]
-
-[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -808,6 +758,56 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/92/aa/bf8ead9ed9d965a9290d291c4ac2d30ac1ae1f9b05a1a0ffdf1a05ac8ac6/starlette-1.5.0.tar.gz", hash = "sha256:7d5f63a7e4981a9587fc2a0fbc44cfb6cc4c9181d8c26d7e948871ed5da8c3df", size = 2711789, upload-time = "2026-08-08T07:23:16.504Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/6a/a9ff0b4b7603f9498fa419b63ff09e182536ff2f739c85df7f38c0b46781/starlette-1.5.0-py3-none-any.whl", hash = "sha256:9ca76b47375e56f279d7c66651e801ef11167e58557c429be7ec55702d81d4bb", size = 74328, upload-time = "2026-08-08T07:23:14.675Z" },
+]
+
+[[package]]
+name = "tid"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anthropic" },
+    { name = "apscheduler" },
+    { name = "fastapi" },
+    { name = "feedparser" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "trafilatura" },
+    { name = "uvicorn" },
+]
+
+[package.optional-dependencies]
+mongo = [
+    { name = "pymongo" },
+]
+redis = [
+    { name = "arq" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anthropic", specifier = ">=0.40" },
+    { name = "apscheduler", specifier = ">=3.10" },
+    { name = "arq", marker = "extra == 'redis'", specifier = ">=0.26" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "feedparser", specifier = ">=6.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4.9" },
+    { name = "trafilatura", specifier = ">=1.12" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+provides-extras = ["mongo", "redis"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
 ]
 
 [[package]]

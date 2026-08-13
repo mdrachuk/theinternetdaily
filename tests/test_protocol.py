@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 
-from papernews.protocol import parse_json_batch, repair_latex_escapes
+from tid.protocol import parse_json_batch, repair_latex_escapes
 
 
 def test_form_feed_becomes_frac_again():

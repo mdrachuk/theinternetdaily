@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from papernews.store import ArticleRow, SqliteStore, open_store, url_hash
+from tid.store import ArticleRow, SqliteStore, open_store, url_hash
 
 
 async def _add(store, title, *, text="body text", published=None,
@@ -172,7 +172,7 @@ async def test_max_fetched_at_moves_when_content_arrives(store):
 # --- migration ------------------------------------------------------------
 
 async def test_all_rows_round_trips_through_upsert(store, tmp_path):
-    """`papernews migrate` is exactly this: all_rows() out, upsert_rows() in."""
+    """`tid migrate` is exactly this: all_rows() out, upsert_rows() in."""
     await _add(store, "keep", published="2030-01-01", summary="s", body="b")
     await _add(store, "bare", text=None)
 
@@ -229,8 +229,8 @@ def test_open_store_rejects_an_unknown_scheme():
 
 
 def test_open_store_reads_mongo_database_and_collection_from_the_url():
-    pytest.importorskip("pymongo", reason="needs papernews[mongo]")
-    from papernews.store.mongo import MongoStore
+    pytest.importorskip("pymongo", reason="needs tid[mongo]")
+    from tid.store.mongo import MongoStore
 
     s = open_store("mongodb://localhost:27017/mydb?collection=mycol")
     assert isinstance(s, MongoStore)

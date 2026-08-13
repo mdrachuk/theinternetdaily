@@ -18,37 +18,37 @@ def _env_path(var: str, default: str) -> Path:
 
 def state_path() -> Path:
     """SQLite file, used when no store URL is set."""
-    return _env_path("PAPERNEWS_STATE", "state.db")
+    return _env_path("TID_STATE", "state.db")
 
 
 def store_url() -> str:
     """Store URL. A `mongodb://…` value here moves the whole app off SQLite."""
-    return os.environ.get("PAPERNEWS_STORE") or str(state_path())
+    return os.environ.get("TID_STORE") or str(state_path())
 
 
 def queue_url() -> str | None:
     """Job queue URL. Unset (or "local") means the in-process queue."""
-    return os.environ.get("PAPERNEWS_QUEUE") or None
+    return os.environ.get("TID_QUEUE") or None
 
 
 def config_path() -> Path:
-    return _env_path("PAPERNEWS_CONFIG", "sources.toml")
+    return _env_path("TID_CONFIG", "sources.toml")
 
 
 def cache_dir() -> Path:
-    return _env_path("PAPERNEWS_CACHE", "archive/cache")
+    return _env_path("TID_CACHE", "archive/cache")
 
 
 def workers() -> int | None:
     """Concurrent LLM batches. None means "ask the backend" — its own limit is
     a better default than a fixed number, since a 70 W local GPU and a hosted
     API want very different values."""
-    raw = os.environ.get("PAPERNEWS_WORKERS", "").strip()
+    raw = os.environ.get("TID_WORKERS", "").strip()
     return int(raw) if raw else None
 
 
 def llm_backend() -> str | None:
-    """LLM backend name; None lets papernews.llm.make_backend read the env."""
+    """LLM backend name; None lets tid.llm.make_backend read the env."""
     return os.environ.get("LLM_BACKEND") or None
 
 

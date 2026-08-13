@@ -1,7 +1,7 @@
 """The unit-of-work layer: everything a queue can be asked to run.
 
 Kept free of any web framework so an arq worker process
-(`arq papernews.worker.WorkerSettings`) can import it without pulling FastAPI,
+(`arq tid.worker.WorkerSettings`) can import it without pulling FastAPI,
 and so the job graph is identical under either queue backend.
 """
 from __future__ import annotations

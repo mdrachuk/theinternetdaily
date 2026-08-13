@@ -17,18 +17,18 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from papernews.cli import (
+from tid.cli import (
     cmd_gather,
     cmd_rewrite,
     cmd_summarize,
     collect_current_edition,
     gather_decorations,
 )
-from papernews.config import load_sources
-from papernews.http import client_context
-from papernews.llm import make_backend
-from papernews.render import build_pdf
-from papernews.store import open_store
+from tid.config import load_sources
+from tid.http import client_context
+from tid.llm import make_backend
+from tid.render import build_pdf
+from tid.store import open_store
 
 
 class VramSampler:

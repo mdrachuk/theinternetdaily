@@ -431,7 +431,7 @@ async def cmd_migrate(src_url: str, dst_url: str, batch: int = 500) -> int:
 # --- CLI --------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="papernews")
+    p = argparse.ArgumentParser(prog="tid")
     p.add_argument("--config", type=Path, default=Path("sources.toml"))
     p.add_argument("--out",    type=Path, default=Path("archive"))
     p.add_argument("--state",  type=Path, default=Path("state.db"),
@@ -441,8 +441,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "(default: LLM_BACKEND, else anthropic)")
     p.add_argument("--store", default=None,
                    help="store URL, e.g. state.db or "
-                        "mongodb://localhost:27017/papernews "
-                        "(default: PAPERNEWS_STORE, else --state)")
+                        "mongodb://localhost:27017/tid "
+                        "(default: TID_STORE, else --state)")
 
     sub = p.add_subparsers(dest="cmd")
 
@@ -469,7 +469,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp_mig.add_argument("--from", dest="src", required=True,
                         help="source store URL (e.g. state.db)")
     sp_mig.add_argument("--to", dest="dst", required=True,
-                        help="target store URL (e.g. mongodb://localhost/papernews)")
+                        help="target store URL (e.g. mongodb://localhost/tid)")
 
     sp_b = sub.add_parser("build", help="ingest + render (default)")
     sp_b.add_argument("--workers", type=int, default=None)
@@ -478,8 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def store_url(args) -> str:
-    """Resolve the store URL: --store, then PAPERNEWS_STORE, then --state."""
-    return args.store or os.environ.get("PAPERNEWS_STORE") or str(args.state)
+    """Resolve the store URL: --store, then TID_STORE, then --state."""
+    return args.store or os.environ.get("TID_STORE") or str(args.state)
 
 
 async def _main(argv: list[str] | None = None) -> int:

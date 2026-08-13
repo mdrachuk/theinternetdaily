@@ -13,7 +13,7 @@ from typing import AsyncIterator
 import httpx
 
 USER_AGENT = (
-    "papernews/0.1 (+https://github.com/mdrachuk/theinternetdaily) "
+    "tid/0.1 (+https://github.com/mdrachuk/theinternetdaily) "
     "python-httpx"
 )
 
