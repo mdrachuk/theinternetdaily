@@ -1,4 +1,4 @@
-"""Redis-backed job queue — optional, behind `pip install papernews[redis]`.
+"""Redis-backed job queue — optional, behind `pip install tid[redis]`.
 
 Why it exists in a single-user repo: durable jobs survive a restart, and
 separate worker processes with their own `max_jobs` are the only thing that
@@ -24,7 +24,7 @@ class ArqQueue:
     def __init__(
         self,
         redis_url: str = "redis://localhost:6379",
-        queue_name: str = "papernews",
+        queue_name: str = "tid",
         pool: Any | None = None,
     ):
         self.redis_url = redis_url
@@ -60,11 +60,11 @@ class ArqQueue:
 def worker_settings(
     jobs: dict[str, JobFn],
     redis_url: str = "redis://localhost:6379",
-    queue_name: str = "papernews",
+    queue_name: str = "tid",
     max_jobs: int = 4,
     job_timeout: int = 3600,
 ) -> type:
-    """Build an arq WorkerSettings class for `arq papernews.worker.Settings`.
+    """Build an arq WorkerSettings class for `arq tid.worker.Settings`.
 
     `max_jobs` is the real concurrency cap: one worker process per queue with
     max_jobs matched to the backend (e.g. vLLM's --max-num-seqs) keeps the GPU

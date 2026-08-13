@@ -18,8 +18,8 @@ import json
 
 import pytest
 
-from papernews.rewrite import parse_rewrites
-from papernews.summarize import parse_summaries
+from tid.rewrite import parse_rewrites
+from tid.summarize import parse_summaries
 
 BODY = "First paragraph.\n\nSecond paragraph."
 

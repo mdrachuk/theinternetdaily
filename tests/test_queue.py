@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from papernews.queue import LocalQueue, open_queue
+from tid.queue import LocalQueue, open_queue
 
 
 async def test_enqueue_runs_the_registered_job():
@@ -127,8 +127,8 @@ def test_open_queue_rejects_an_unknown_url():
 
 
 def test_open_queue_builds_the_arq_backend_for_redis_urls():
-    pytest.importorskip("arq", reason="needs papernews[redis]")
-    from papernews.queue.arq_queue import ArqQueue
+    pytest.importorskip("arq", reason="needs tid[redis]")
+    from tid.queue.arq_queue import ArqQueue
 
     q = open_queue("redis://localhost:6379")
     assert isinstance(q, ArqQueue)

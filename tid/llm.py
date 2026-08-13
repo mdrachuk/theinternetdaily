@@ -255,7 +255,7 @@ class VLLMBackend:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "papernews_batch",
+                    "name": "tid_batch",
                     "schema": json_schema,
                     "strict": True,
                 },

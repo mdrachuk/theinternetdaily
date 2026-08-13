@@ -1,7 +1,7 @@
 """End-to-end pipeline test with no network, no GPU and no API key.
 
 gather → extract → summarize → rewrite → edition → LaTeX, with HTTP served by
-httpx.MockTransport and the LLM replaced by papernews.testing.FakeBackend. This
+httpx.MockTransport and the LLM replaced by tid.testing.FakeBackend. This
 is the test that would have caught every signature break during the async and
 store migrations, and it is the one CI can always run.
 
@@ -15,15 +15,15 @@ import shutil
 import httpx
 import pytest
 
-from papernews.cli import (
+from tid.cli import (
     cmd_gather,
     cmd_rewrite,
     cmd_summarize,
     collect_current_edition,
 )
-from papernews.render import build_pdf, render_tex
-from papernews.store import SqliteStore
-from papernews.testing import FakeBackend
+from tid.render import build_pdf, render_tex
+from tid.store import SqliteStore
+from tid.testing import FakeBackend
 
 FEED = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel>
@@ -214,8 +214,8 @@ async def test_batches_never_mix_sources(pipeline):
     """A batch is one LLM call and the model treats it as one piece of work:
     mixing a Russian article in with English ones made it summarize all of them
     in English, overriding the per-article language rule."""
-    from papernews.cli import _chunks_by_source
-    from papernews.store import ArticleRow
+    from tid.cli import _chunks_by_source
+    from tid.store import ArticleRow
 
     rows = [
         ArticleRow(id=f"{src}{i}", url=f"u{src}{i}", title="t", source=src)

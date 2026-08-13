@@ -1,6 +1,6 @@
-# papernews
+# The Internet Daily
 
-![papernews on a reMarkable, next to a cup of coffee](assets/hero.jpg)
+![The Internet Daily on a reMarkable, next to a cup of coffee](assets/hero.jpg)
 
 Every news site looks different. Hacker News, MacRumors, Quanta, my
 favourite ML blog, my favourite math blog — each one its own layout, fonts,
@@ -10,7 +10,7 @@ choices first and focus past the visual noise.
 I much prefer reading the way a LaTeX paper or an old magazine looks: quiet
 typography, generous margins, no color, nothing competing for attention.
 
-**papernews** is the fix. A script pulls all those feeds, has Claude clean
+**The Internet Daily** is the fix. A script pulls all those feeds, has Claude clean
 up, translate to English, and rewrite the article bodies — the **full
 text**, not just summaries — and renders the result into one consistently
 typeset LaTeX PDF. Every article is *in* the PDF; you read entirely
@@ -37,8 +37,8 @@ anything), an LLM backend (Anthropic API key **or** a local
 
 ```bash
 # 1) Pull
-git clone https://github.com/marcj/papernews
-cd papernews
+git clone https://github.com/mdrachuk/theinternetdaily
+cd theinternetdaily
 
 # 2) Configure
 cp .env.example .env
@@ -48,7 +48,7 @@ $EDITOR .env             # paste ANTHROPIC_API_KEY=sk-ant-... (or set LLM_BACKEN
 $EDITOR sources.toml     # add/remove RSS/HN entries, set per-source limits
 
 # 4) (Optional) Tweak the look
-$EDITOR papernews/template.tex.j2
+$EDITOR tid/template.tex.j2
 
 # 5) Build + run
 docker compose up --build -d
@@ -62,18 +62,18 @@ Everything you'd normally want to change is in **two files**:
 - **`sources.toml`** — which feeds, how many items per feed, in what order.
   Two source kinds today: `kind = "hn"` (Hacker News, top-by-points via the
   Algolia API) and `kind = "rss"` (any Atom/RSS feed via feedparser).
-- **`papernews/template.tex.j2`** — the LaTeX template. Page size, fonts,
+- **`tid/template.tex.j2`** — the LaTeX template. Page size, fonts,
   colors, layout, what goes on the cover, everything. Edit, restart the
   container, refresh `/digest.pdf`.
 
 Optional but useful:
 
-- **`papernews/summarize.py`** + **`papernews/rewrite.py`** — the LLM
+- **`tid/summarize.py`** + **`tid/rewrite.py`** — the LLM
   system prompts. When using Anthropic, change `ANTHROPIC_MODEL` to
   `claude-sonnet-4-6` for fancier rewrites at ~10× the cost; adjust
   `_SYSTEM` to change the editorial voice (e.g. disable the
   auto-translate-to-English rule).
-- **`papernews/wiki.py`** — what goes into the World news block and the
+- **`tid/wiki.py`** — what goes into the World news block and the
   Quote-of-the-day source.
 
 ### Getting the PDF onto a reMarkable
@@ -88,14 +88,14 @@ A few different ways, no special script needed:
   pushes files to your reMarkable cloud account. Pair once, then:
   ```bash
   curl -s http://your-machine:8000/digest.pdf -o today.pdf
-  rmapi put today.pdf /Papernews
+  rmapi put today.pdf /TheInternetDaily
   ```
   Stick that two-liner in cron on the host and the device picks it up on
   next sync automatically.
 - **[Remailable](https://github.com/remailable/remailable)** — a third-party
   email-to-reMarkable bridge ([remailable.getneutrality.org](https://remailable.getneutrality.org)).
   You email the PDF as an attachment to your assigned address and it appears
-  on the device. Useful if your papernews host can `mail`/`mutt` but can't
+  on the device. Useful if your host can `mail`/`mutt` but can't
   reach the reMarkable directly. (reMarkable has no first-party
   email-to-device; do not believe earlier versions of this README that
   implied otherwise.)
@@ -106,8 +106,8 @@ probably don't want me poking your reMarkable cloud account with your token.
 ## Quick start
 
 ```bash
-git clone https://github.com/yourname/papernews
-cd papernews
+git clone https://github.com/yourname/theinternetdaily
+cd theinternetdaily
 cp .env.example .env
 # paste your ANTHROPIC_API_KEY into .env (get one at
 # https://console.anthropic.com/settings/keys)
@@ -123,7 +123,7 @@ container restarts.
 
 ## LLM backends
 
-Every LLM call goes through an `LLMBackend` (`papernews/llm.py`) — a protocol
+Every LLM call goes through an `LLMBackend` (`tid/llm.py`) — a protocol
 with three implementations. Pick one with `LLM_BACKEND`, or pass `--backend` to
 the CLI. Nothing is decided at import time, so one process can drive two
 backends if it wants to.
@@ -208,7 +208,7 @@ that balances speed and quality for your hardware.
 | `qwen2.5:7b` | ~5 GB | Good quality/speed balance |
 
 CPU inference works but is slow. The Ollama backend already limits itself to
-one batch in flight, so there is no need to set `PAPERNEWS_WORKERS` by hand.
+one batch in flight, so there is no need to set `TID_WORKERS` by hand.
 
 ## Storage and job queues
 
@@ -216,15 +216,15 @@ Both are pluggable, and both default to **nothing extra to run**:
 
 | | default | optional |
 |---|---|---|
-| storage | SQLite file (`PAPERNEWS_STATE`) | MongoDB — `papernews[mongo]` |
-| jobs | in-process asyncio queue | Redis + arq workers — `papernews[redis]` |
+| storage | SQLite file (`TID_STATE`) | MongoDB — `tid[mongo]` |
+| jobs | in-process asyncio queue | Redis + arq workers — `tid[redis]` |
 
 Switch either with a URL:
 
 ```bash
 # .env
-PAPERNEWS_STORE=mongodb://mongo:27017/papernews
-PAPERNEWS_QUEUE=redis://redis:6379
+TID_STORE=mongodb://mongo:27017/tid
+TID_QUEUE=redis://redis:6379
 ```
 
 and bring up the matching overlay so the service exists:
@@ -240,12 +240,12 @@ Moving between backends is a store-to-store copy through the protocol, so it
 works for any pair:
 
 ```bash
-uv run papernews migrate --from state.db --to mongodb://localhost:27017/papernews
+uv run tid migrate --from state.db --to mongodb://localhost:27017/tid
 ```
 
 The Redis overlay also starts an `arq` worker. That is worth understanding
 even as a single user: with a queue, the web process only *enqueues* work and a
-separate process with `PAPERNEWS_MAX_JOBS` runs it — a process-level cap is the
+separate process with `TID_MAX_JOBS` runs it — a process-level cap is the
 only thing that genuinely bounds how many LLM jobs hit one GPU at a time.
 
 ## What it produces
@@ -507,7 +507,7 @@ REMARKABLE="root@10.11.99.1"            # adjust to your device's IP
 SSH_KEY=/data/hooks/remarkable_id_ed25519
 
 scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new \
-    "$PDF" "$REMARKABLE:/home/root/papernews.pdf"
+    "$PDF" "$REMARKABLE:/home/root/theinternetdaily.pdf"
 
 # Refresh the UI so the file appears immediately.
 ssh -i "$SSH_KEY" "$REMARKABLE" 'systemctl restart xochitl'
@@ -519,7 +519,7 @@ reMarkable's `/home/root/.ssh/authorized_keys` once, and from then on
 every ingest pushes the new paper to your device.
 
 The same pattern works for Kindle (`scp` over USB networking), a network
-printer (`lp -d papernews "$PDF"`), an email (`mutt -a "$PDF"`), or
+printer (`lp -d tid "$PDF"`), an email (`mutt -a "$PDF"`), or
 anything else you can script.
 
 ## Tests
@@ -534,7 +534,7 @@ uv run pytest
 
 `tests/test_e2e_offline.py` runs the whole pipeline — gather → extract →
 summarize → rewrite → edition → LaTeX — with HTTP served by
-`httpx.MockTransport` and the model replaced by `papernews.testing.FakeBackend`,
+`httpx.MockTransport` and the model replaced by `tid.testing.FakeBackend`,
 so it needs no network, no GPU and no API key. The xelatex step runs too, but
 only where xelatex is installed.
 
@@ -589,12 +589,12 @@ fetches CPython 3.14 if you don't have it, and creates `.venv` from
 uv sync
 export ANTHROPIC_API_KEY=sk-ant-...   # or: export LLM_BACKEND=ollama OLLAMA_HOST=...
 
-uv run papernews gather       # fetch + extract
-uv run papernews summarize    # LLM pass 1 (batched)
-uv run papernews rewrite      # LLM pass 2 (batched)
-uv run papernews render       # xelatex → PDF
+uv run tid gather       # fetch + extract
+uv run tid summarize    # LLM pass 1 (batched)
+uv run tid rewrite      # LLM pass 2 (batched)
+uv run tid render       # xelatex → PDF
 # or all of the above in sequence:
-uv run papernews build
+uv run tid build
 ```
 
 Dependency changes go through `pyproject.toml` — `uv add <pkg>` / `uv remove
@@ -608,7 +608,7 @@ with `texlive-xetex`, `texlive-latex-extra`, `lmodern`), `pdftoppm` (poppler).
 
 ## Customizing the typography
 
-Everything visual lives in one file: [`papernews/template.tex.j2`](papernews/template.tex.j2).
+Everything visual lives in one file: [`tid/template.tex.j2`](tid/template.tex.j2).
 
 - Page size: `paperwidth=157mm, paperheight=210mm` (tuned for reMarkable Pro)
 - Body font: Latin Modern Roman 10pt
@@ -655,8 +655,8 @@ can't surprise you above whatever you set.
 ## Project layout
 
 ```
-papernews/
-├── papernews/
+theinternetdaily/
+├── tid/
 │   ├── fetch.py          # HN Algolia + RSS feedparser
 │   ├── extract.py        # trafilatura
 │   ├── llm.py            # LLMBackend protocol: Anthropic / vLLM / Ollama
@@ -670,16 +670,16 @@ papernews/
 │   ├── store/            # storage protocol + backends
 │   │   ├── base.py       #   Store protocol + ArticleRow
 │   │   ├── sqlite.py     #   default backend, no extra services
-│   │   └── mongo.py      #   optional: papernews[mongo]
+│   │   └── mongo.py      #   optional: tid[mongo]
 │   ├── queue/            # job queue protocol + backends
 │   │   ├── base.py       #   JobQueue protocol
 │   │   ├── local.py      #   default: in-process asyncio
-│   │   └── arq_queue.py  #   optional: papernews[redis]
+│   │   └── arq_queue.py  #   optional: tid[redis]
 │   ├── render.py         # Jinja + xelatex
 │   ├── preview.py        # PDF → PNG via pdftoppm
 │   ├── cache.py          # On-disk cache by content hash
 │   ├── archive.py        # Every edition ever built, for the index page
-│   ├── cli.py            # papernews command
+│   ├── cli.py            # tid command
 │   ├── web.py            # FastAPI + APScheduler (AsyncIOScheduler)
 │   └── template.tex.j2   # the magazine
 ├── scripts/
@@ -705,7 +705,7 @@ end in an hour.
 
 MIT — see [LICENSE](LICENSE).
 
-## Why "papernews"
+## Why "The Internet Daily"
 
-Working name; happy to take suggestions. The vibe is: an old-fashioned daily
-paper, not a feed. You read it once, then you put it down.
+The vibe is: an old-fashioned daily paper, not a feed. The internet, set in
+type and delivered once a day. You read it, then you put it down.

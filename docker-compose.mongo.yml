@@ -8,16 +8,16 @@
 # runnable, and because a downstream multi-user service wants per-user
 # databases without reimplementing the layer.
 services:
-  papernews:
+  tid:
     environment:
-      - PAPERNEWS_STORE=mongodb://mongo:27017/papernews
+      - TID_STORE=mongodb://mongo:27017/tid
     depends_on:
       mongo:
         condition: service_healthy
 
   mongo:
     image: mongo:7
-    container_name: papernews-mongo
+    container_name: tid-mongo
     restart: unless-stopped
     command: ["--quiet"]
     volumes:

@@ -1,4 +1,4 @@
-"""MongoDB store — optional, behind `pip install papernews[mongo]`.
+"""MongoDB store — optional, behind `pip install tid[mongo]`.
 
 A single-user self-hoster should not have to run a database server to read a
 newspaper, so this is not the default. It exists because a downstream
@@ -62,7 +62,7 @@ class MongoStore:
     def __init__(
         self,
         uri: str = "mongodb://localhost:27017",
-        database: str = "papernews",
+        database: str = "tid",
         collection: str = "article",
         client: Any | None = None,
     ):

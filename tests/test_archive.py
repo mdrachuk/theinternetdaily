@@ -12,15 +12,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-import papernews.archive as archive
-import papernews.web as web
+import tid.archive as archive
+import tid.web as web
 
 
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
     d = tmp_path / "cache"
     d.mkdir()
-    monkeypatch.setenv("PAPERNEWS_CACHE", str(d))
+    monkeypatch.setenv("TID_CACHE", str(d))
     return d
 
 
@@ -129,7 +129,7 @@ async def test_archived_pdf_is_served_with_a_dated_filename(client, cache):
     r = await client.get(f"/digest/{'c' * 24}.pdf")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
-    assert "papernews-2026-08-12-cccccc.pdf" in r.headers["content-disposition"]
+    assert "theinternetdaily-2026-08-12-cccccc.pdf" in r.headers["content-disposition"]
 
 
 async def test_unknown_edition_is_404(client, cache):

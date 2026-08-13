@@ -7,34 +7,34 @@
 # thing that actually bounds LLM concurrency. A semaphore inside the web
 # process cannot, once there is more than one process.
 #
-# PAPERNEWS_MAX_JOBS should match the LLM backend's own concurrency
+# TID_MAX_JOBS should match the LLM backend's own concurrency
 # (vLLM's --max-num-seqs). Plan step 8 splits this into per-queue workers.
 services:
-  papernews:
+  tid:
     environment:
-      - PAPERNEWS_QUEUE=redis://redis:6379
+      - TID_QUEUE=redis://redis:6379
     depends_on:
       redis:
         condition: service_healthy
 
   worker:
-    image: papernews:latest
+    image: tid:latest
     build: .
-    container_name: papernews-worker
+    container_name: tid-worker
     restart: unless-stopped
-    command: ["/opt/venv/bin/arq", "papernews.worker.WorkerSettings"]
+    command: ["/opt/venv/bin/arq", "tid.worker.WorkerSettings"]
     environment:
-      - PAPERNEWS_QUEUE=redis://redis:6379
-      - PAPERNEWS_MAX_JOBS=${PAPERNEWS_MAX_JOBS:-1}
-      - PAPERNEWS_JOB_TIMEOUT=${PAPERNEWS_JOB_TIMEOUT:-3600}
-      - PAPERNEWS_STORE=${PAPERNEWS_STORE:-}
+      - TID_QUEUE=redis://redis:6379
+      - TID_MAX_JOBS=${TID_MAX_JOBS:-1}
+      - TID_JOB_TIMEOUT=${TID_JOB_TIMEOUT:-3600}
+      - TID_STORE=${TID_STORE:-}
       - LLM_BACKEND=${LLM_BACKEND:-anthropic}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://vllm:8000/v1}
       - VLLM_MODEL=${VLLM_MODEL:-google/gemma-3-12b-it}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-mistral}
-      - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
+      - TID_WORKERS=${TID_WORKERS:-8}
       - POST_INGEST_HOOK=${POST_INGEST_HOOK:-}
       - POST_INGEST_HOOK_TIMEOUT=${POST_INGEST_HOOK_TIMEOUT:-300}
     volumes:
@@ -49,7 +49,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: papernews-redis
+    container_name: tid-redis
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:

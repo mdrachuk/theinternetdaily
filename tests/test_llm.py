@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from papernews.llm import (
+from tid.llm import (
     ANTHROPIC_LIMITS,
     OLLAMA_LIMITS,
     VLLM_LIMITS,
@@ -22,7 +22,7 @@ from papernews.llm import (
     VLLMBackend,
     make_backend,
 )
-from papernews.testing import FakeBackend
+from tid.testing import FakeBackend
 
 
 def _sse(*chunks: dict) -> bytes:
@@ -176,7 +176,7 @@ async def test_rewrite_asks_for_a_per_article_budget_from_the_backend():
     """The concrete failure this pins: a flat 4096-token ask truncated the
     longest articles mid-reply, and a truncated batch protocol parses to
     nothing — so the article silently stayed pending forever."""
-    from papernews.rewrite import rewrite_batch
+    from tid.rewrite import rewrite_batch
 
     seen: dict = {}
 
@@ -215,7 +215,7 @@ async def test_a_truncated_reply_is_reported_not_swallowed(caplog):
 async def test_summarize_asks_for_a_per_item_budget_from_the_backend():
     """A flat 300-tokens-per-item cap let one rambling summary truncate the
     reply and take its whole batch down with it."""
-    from papernews.summarize import summarize_batch
+    from tid.summarize import summarize_batch
 
     seen: dict = {}
 

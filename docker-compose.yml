@@ -1,8 +1,8 @@
 services:
-  papernews:
+  tid:
     build: .
-    image: papernews:latest
-    container_name: papernews
+    image: tid:latest
+    container_name: tid
     restart: unless-stopped
     environment:
       # LLM backend — "anthropic" (default), "vllm", or "ollama".
@@ -22,18 +22,18 @@ services:
       # Storage and queue. Defaults: SQLite at /data/state.db and an
       # in-process asyncio queue — no extra services. See
       # docker-compose.mongo.yml / docker-compose.redis.yml to change either.
-      - PAPERNEWS_STORE=${PAPERNEWS_STORE:-}
-      - PAPERNEWS_QUEUE=${PAPERNEWS_QUEUE:-}
+      - TID_STORE=${TID_STORE:-}
+      - TID_QUEUE=${TID_QUEUE:-}
       # Paths inside the container. The image defaults these to /data, so they
       # only need setting to point at a second store — a benchmark run, say.
-      - PAPERNEWS_STATE=${PAPERNEWS_STATE:-/data/state.db}
-      - PAPERNEWS_CACHE=${PAPERNEWS_CACHE:-/data/archive/cache}
+      - TID_STATE=${TID_STATE:-/data/state.db}
+      - TID_CACHE=${TID_CACHE:-/data/archive/cache}
       # Scheduling: INGEST_SCHEDULE (fixed HH:MM times, in INGEST_TIMEZONE)
       # wins over INGEST_INTERVAL_SECONDS when both are set.
       - INGEST_INTERVAL_SECONDS=${INGEST_INTERVAL_SECONDS:-14400}
       - INGEST_SCHEDULE=${INGEST_SCHEDULE:-}
       - INGEST_TIMEZONE=${INGEST_TIMEZONE:-UTC}
-      - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
+      - TID_WORKERS=${TID_WORKERS:-8}
       # Hook to push the PDF to reMarkable after each ingest
       - POST_INGEST_HOOK=${POST_INGEST_HOOK:-}
       - POST_INGEST_HOOK_TIMEOUT=${POST_INGEST_HOOK_TIMEOUT:-300}
@@ -46,7 +46,7 @@ services:
       # Lets `OLLAMA_HOST=http://host.docker.internal:...` work on Linux.
       - "host.docker.internal:host-gateway"
     ports:
-      # Default publishes on every interface, as before. Set PAPERNEWS_BIND to
+      # Default publishes on every interface, as before. Set TID_BIND to
       # 127.0.0.1 when a reverse proxy on the host is the only thing that
       # should reach the app.
-      - "${PAPERNEWS_BIND:-0.0.0.0}:8000:8000"
+      - "${TID_BIND:-0.0.0.0}:8000:8000"

@@ -1,4 +1,4 @@
-"""FastAPI web service for papernews.
+"""FastAPI web service for The Internet Daily.
 
 Routes:
   GET  /                  index: latest edition + every past edition
@@ -15,17 +15,17 @@ Routes:
 Background:
   APScheduler (AsyncIOScheduler) enqueues `ingest` on a schedule.
 
-Configuration is read from the environment per call by `papernews.config`;
-the work itself lives in `papernews.jobs`, so an arq worker runs exactly the
+Configuration is read from the environment per call by `tid.config`;
+the work itself lives in `tid.jobs`, so an arq worker runs exactly the
 same code without importing this module.
 
 Environment:
-  PAPERNEWS_STATE   SQLite path (default: state.db)
-  PAPERNEWS_STORE   store URL; overrides PAPERNEWS_STATE (e.g. mongodb://…)
-  PAPERNEWS_QUEUE   queue URL; unset = in-process (e.g. redis://redis:6379)
-  PAPERNEWS_CONFIG  sources.toml path
-  PAPERNEWS_CACHE   cache dir
-  PAPERNEWS_WORKERS concurrent LLM batches
+  TID_STATE   SQLite path (default: state.db)
+  TID_STORE   store URL; overrides TID_STATE (e.g. mongodb://…)
+  TID_QUEUE   queue URL; unset = in-process (e.g. redis://redis:6379)
+  TID_CONFIG  sources.toml path
+  TID_CACHE   cache dir
+  TID_WORKERS concurrent LLM batches
 
   Scheduling — pick one:
     INGEST_INTERVAL_SECONDS  every N seconds (default: 14400 = 4h)
@@ -103,7 +103,7 @@ async def _lifespan(app: FastAPI):
     """Own the scheduler for the app's lifetime. Importing this module must
     not start it — that is what made the old Flask version untestable."""
     app.state.scheduler = None
-    if os.environ.get("PAPERNEWS_NO_SCHED") != "1":
+    if os.environ.get("TID_NO_SCHED") != "1":
         async def _enqueue_ingest() -> None:
             await app.state.queue.enqueue("ingest", job_id="ingest")
 
@@ -117,7 +117,7 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app(queue=None) -> FastAPI:
-    app = FastAPI(title="papernews", docs_url=None, redoc_url=None,
+    app = FastAPI(title="The Internet Daily", docs_url=None, redoc_url=None,
                   lifespan=_lifespan)
     # concurrency=1: the LLM stages and xelatex are the bottleneck, so a second
     # concurrent ingest would only contend for them.
@@ -191,7 +191,7 @@ def create_app(queue=None) -> FastAPI:
         return FileResponse(
             pdf,
             media_type="application/pdf",
-            filename=f"papernews-{date.today().isoformat()}.pdf",
+            filename=f"theinternetdaily-{date.today().isoformat()}.pdf",
             content_disposition_type="inline",
             headers={"Cache-Control": "public, max-age=300"},
         )
@@ -217,7 +217,7 @@ def create_app(queue=None) -> FastAPI:
             media_type="application/pdf",
             # Same-day editions differ only by key, so the key goes in the
             # filename — otherwise two downloads collide in ~/Downloads.
-            filename=f"papernews-{stamp}-{key[:6]}.pdf",
+            filename=f"theinternetdaily-{stamp}-{key[:6]}.pdf",
             content_disposition_type="inline",
             # Archived editions are immutable: the key *is* the content hash.
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
@@ -419,12 +419,12 @@ def _render_index(editions: list, current_key: str | None) -> str:
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>papernews</title>
+  <title>The Internet Daily</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>{_STYLE}</style>
 </head>
 <body>
-  <h1>papernews</h1>
+  <h1>The Internet Daily</h1>
   <p class="sub">A curated PDF you read on your reMarkable, not in a browser.</p>
 {hero}
 {previous}
@@ -437,5 +437,5 @@ def _render_index(editions: list, current_key: str | None) -> str:
 """
 
 
-# ASGI entry point: `uvicorn papernews.web:app`
+# ASGI entry point: `uvicorn tid.web:app`
 app = create_app()

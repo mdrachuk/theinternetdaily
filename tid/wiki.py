@@ -1,4 +1,4 @@
-"""Wikipedia/Wikiquote helpers for papernews.
+"""Wikipedia/Wikiquote helpers for tid.
 
 - Daily 'Current events' portal URL for a top news section
 - Quote of the day (Wikiquote) for the cover
