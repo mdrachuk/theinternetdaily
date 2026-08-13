@@ -335,20 +335,41 @@ Four stages, each idempotent and resumable:
 
 A background `APScheduler` job (`AsyncIOScheduler`, on the app's event loop)
 runs steps 1–3 every 4 hours (configurable).
-The render step is on-demand; the first hit to `/digest.pdf` after an ingest
-builds the PDF and caches it.
+Each ingest ends by building the edition, so the PDF and its archive entry
+exist whether or not anyone visits. `/digest.pdf` still builds on demand when
+the cache is cold — a fresh install, or a config change between runs.
 
 ## HTTP endpoints
 
 | route          | what it does                                            |
 |----------------|---------------------------------------------------------|
-| `GET /`        | minimal landing page, cover preview + Read PDF link     |
+| `GET /`        | index: latest edition's cover, then every past edition  |
 | `GET /digest.pdf` | the current edition (built on demand, then cached)   |
 | `GET /preview.png` | page 1 rasterized at 180 DPI                        |
+| `GET /digest/{key}.pdf` | one archived edition, by cache key             |
+| `GET /digest/{key}.png` | its cover, rendered on first request           |
+| `GET /archive.json` | the archive as JSON (key, date, article count)     |
 | `GET /sources` | JSON list of configured sources + latest `fetched_at`   |
 | `GET /healthz` | liveness probe (returns `ok`)                           |
 | `GET /readyz`  | readiness probe — pings the store and parses the config |
 | `POST /ingest` | manual kick of the gather → summarize → rewrite cycle   |
+
+## The archive
+
+Every build drops a small JSON sidecar next to its PDF in the cache
+directory, and `GET /` lists those sidecars newest-first: the latest edition
+with its cover, then every earlier one as a row with its date, article count
+and per-source breakdown. Nothing is ever deleted — an edition stays
+downloadable at `/digest/{key}.pdf` for as long as its file is on disk, and
+those URLs are immutable (the key *is* the content hash), so they cache
+forever.
+
+PDFs that predate the sidecars still appear, described by what the
+filesystem knows: mtime for the date, size for the size, no article count.
+
+At roughly 500 KB per edition and one or two editions a day, the cache grows
+by about 350 MB a year. There is no automatic pruning; `rm` the old
+`{key}.pdf` and `{key}.json` pairs when you want the space back.
 
 ## Configuring sources
 
@@ -444,9 +465,9 @@ INGEST_SCHEDULE=07:00,18:00     # comma-separated HH:MM
 INGEST_TIMEZONE=Europe/London   # any IANA tz; default UTC
 ```
 
-If both are set, `INGEST_SCHEDULE` wins. The render is still on-demand —
-hitting `/digest.pdf` between scheduled runs gives you the cached PDF
-instantly.
+If both are set, `INGEST_SCHEDULE` wins. Either way the run ends with a
+built PDF, so hitting `/digest.pdf` between scheduled runs returns the cached
+file instantly.
 
 You can also kick a manual ingest any time:
 
@@ -657,6 +678,7 @@ papernews/
 │   ├── render.py         # Jinja + xelatex
 │   ├── preview.py        # PDF → PNG via pdftoppm
 │   ├── cache.py          # On-disk cache by content hash
+│   ├── archive.py        # Every edition ever built, for the index page
 │   ├── cli.py            # papernews command
 │   ├── web.py            # FastAPI + APScheduler (AsyncIOScheduler)
 │   └── template.tex.j2   # the magazine

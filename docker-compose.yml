@@ -28,7 +28,11 @@ services:
       # only need setting to point at a second store — a benchmark run, say.
       - PAPERNEWS_STATE=${PAPERNEWS_STATE:-/data/state.db}
       - PAPERNEWS_CACHE=${PAPERNEWS_CACHE:-/data/archive/cache}
+      # Scheduling: INGEST_SCHEDULE (fixed HH:MM times, in INGEST_TIMEZONE)
+      # wins over INGEST_INTERVAL_SECONDS when both are set.
       - INGEST_INTERVAL_SECONDS=${INGEST_INTERVAL_SECONDS:-14400}
+      - INGEST_SCHEDULE=${INGEST_SCHEDULE:-}
+      - INGEST_TIMEZONE=${INGEST_TIMEZONE:-UTC}
       - PAPERNEWS_WORKERS=${PAPERNEWS_WORKERS:-8}
       # Hook to push the PDF to reMarkable after each ingest
       - POST_INGEST_HOOK=${POST_INGEST_HOOK:-}
@@ -42,4 +46,7 @@ services:
       # Lets `OLLAMA_HOST=http://host.docker.internal:...` work on Linux.
       - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      # Default publishes on every interface, as before. Set PAPERNEWS_BIND to
+      # 127.0.0.1 when a reverse proxy on the host is the only thing that
+      # should reach the app.
+      - "${PAPERNEWS_BIND:-0.0.0.0}:8000:8000"

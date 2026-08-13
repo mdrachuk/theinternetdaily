@@ -12,3 +12,4 @@ state.db
 .DS_Store
 data/
 .env
+.deploy/

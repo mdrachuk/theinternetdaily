@@ -138,6 +138,54 @@ def _stubbed_ingest(fake_pdf: Path):
     )
 
 
+async def test_interval_job_is_actually_scheduled(clean_env):
+    """Regression: `next_run_time=None` is APScheduler's *paused* marker, so
+    passing it left the interval ingest sitting there forever."""
+    os.environ["INGEST_INTERVAL_SECONDS"] = "3600"
+    sched = web.start_scheduler(_noop)
+    try:
+        (job,) = sched.get_jobs()
+        assert job.next_run_time is not None, "interval ingest never fires"
+    finally:
+        sched.shutdown(wait=False)
+
+
+async def test_ingest_builds_the_edition_without_a_hook(clean_env, hook_env):
+    """The archive must gain a row per ingest, visitor or no visitor."""
+    fake_pdf, _, _, _ = hook_env
+    os.environ.pop("POST_INGEST_HOOK", None)
+
+    patches = _stubbed_ingest(fake_pdf)
+    for p in patches:
+        p.start()
+    try:
+        await jobs.ingest()
+        jobs.build_pdf_for_key.assert_awaited()
+    finally:
+        for p in patches:
+            p.stop()
+
+
+async def test_failed_build_does_not_break_the_ingest(clean_env, hook_env):
+    fake_pdf, _, _, _ = hook_env
+    os.environ.pop("POST_INGEST_HOOK", None)
+
+    patches = _stubbed_ingest(fake_pdf)
+    for p in patches:
+        p.start()
+    boom = mock.patch.object(
+        jobs, "build_pdf_for_key",
+        new=mock.AsyncMock(side_effect=RuntimeError("xelatex died")),
+    )
+    boom.start()
+    try:
+        await jobs.ingest()  # must not raise
+    finally:
+        boom.stop()
+        for p in patches:
+            p.stop()
+
+
 async def test_hook_runs_with_pdf_path_after_successful_ingest(clean_env, hook_env):
     fake_pdf, hook, hook_log, _ = hook_env
     os.environ["POST_INGEST_HOOK"] = str(hook)
