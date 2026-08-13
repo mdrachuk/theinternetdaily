@@ -11,7 +11,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import config
+from . import archive, config
 from .cache import edition_key, ensure_dir, pdf_path, preview_path
 from .cli import cmd_ingest, collect_current_edition, gather_decorations
 from .http import client_context
@@ -76,11 +76,15 @@ async def build_pdf_for_key(
             if own_backend:
                 await llm.aclose()
         # Use the cache dir as build workdir so .build/ stays beside the PDF.
+        today = date.today().isoformat()
         tmp_pdf = await build_pdf(
-            date.today().isoformat(), articles, cache, decorations=decorations
+            today, articles, cache, decorations=decorations
         )
         if tmp_pdf != out:
             tmp_pdf.replace(out)
+        # Sidecar last: it is what puts this edition on the archive index, so
+        # it must not appear before the PDF it describes is in place.
+        archive.record(cache, key, today, articles)
     return out
 
 
@@ -142,15 +146,25 @@ async def ingest() -> None:
                     client, store, backend, sources, config.workers()
                 )
 
+            # Build the edition here rather than leaving it to whoever asks
+            # for /digest.pdf first. An unattended box has to end every ingest
+            # with a PDF on disk and a row in the archive, otherwise the
+            # archive records when someone happened to visit, not what was
+            # published.
+            pdf = None
+            try:
+                key = await current_key(store, sources)
+                pdf = await build_pdf_for_key(key, store, sources, backend)
+            except Exception as e:
+                _log(f"[post-ingest build] {e}")
+
             # The hook is an executable on the container's filesystem (usually
             # dropped in via the bind volume) that receives the freshly-built
             # PDF path as its single argument. Useful for SCP-ing to a
             # reMarkable, mailing it somewhere, printing, etc.
             hook = config.post_ingest_hook()
-            if hook:
+            if hook and pdf is not None:
                 try:
-                    key = await current_key(store, sources)
-                    pdf = await build_pdf_for_key(key, store, sources, backend)
                     await run_hook(hook, pdf)
                 except Exception as e:
                     _log(f"[post-ingest hook] {e}")
