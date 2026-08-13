@@ -83,9 +83,11 @@ def start_scheduler(job) -> AsyncIOScheduler:
                 sys.stderr.flush()
     else:
         every = int(os.environ.get("INGEST_INTERVAL_SECONDS", str(4 * 3600)))
-        sched.add_job(job, "interval",
-                      seconds=every, id="ingest",
-                      next_run_time=None)
+        # No next_run_time here. Passing it explicitly as None is how
+        # APScheduler represents a *paused* job (it is what job.pause()
+        # writes), so the interval job would be added and never fire. Leaving
+        # it out lets the trigger compute the first run, one interval out.
+        sched.add_job(job, "interval", seconds=every, id="ingest")
     sched.start()
     return sched
 
