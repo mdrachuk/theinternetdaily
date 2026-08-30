@@ -12,13 +12,14 @@ stories. Without a snapshot, "the edition of 12 August" would quietly become
 "whatever the store would produce for 12 August today", which is a different
 paper each time you open it.
 
-Each snapshot also records where it *ended*: `watermark`, the newest
-`fetched_at` among the articles it carries. That is what the next edition
-starts from, so "everything since the last sync" is a fact on disk rather
-than a guess about the clock. `content` — the store's `max_fetched_at` at
-build time — sits beside it so that re-filing a source in sources.toml, which
-moves the edition key without bringing in a single new article, does not look
-like a sync that never happened (see `previous`).
+Each snapshot also records the window it covered: `since`, the `fetched_at`
+it started after, and `watermark`, the newest `fetched_at` among the articles
+it carries. The next edition starts from that watermark, so "everything since
+the last sync" is a fact on disk rather than a guess about the clock.
+`content` — the store's `max_fetched_at` at build time — sits beside them so
+that re-filing a source in sources.toml, which moves the edition key without
+bringing in a single new article, re-renders the same window instead of
+looking like a sync that never happened (see `boundary`).
 
 Editions from before this module stored items — the PDF era — still list, with
 `has_items` false. Nothing can render them as a page, and pretending they are
@@ -31,7 +32,7 @@ import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import edition as ed
@@ -57,6 +58,7 @@ class Edition:
     size: int = 0                   # snapshot bytes on disk
     has_items: bool = False         # false = PDF-era, cannot be rendered
     content: str = ""               # store max_fetched_at this was built from
+    since: str = ""                 # fetched_at this edition started after
     watermark: str = ""             # newest fetched_at among its articles
 
 
@@ -70,6 +72,7 @@ def record(
     date: str,
     articles: list[dict],
     content: str = "",
+    since: str | None = None,
 ) -> ed.Edition:
     """Write the snapshot for a freshly assembled edition, and return it.
 
@@ -80,6 +83,7 @@ def record(
     built = ed.build(articles, key=key, date=date, built_at=built_at)
     payload = ed.to_snapshot(built)
     payload["content"] = content
+    payload["since"] = since or ""
     # Taken over the articles actually carried, not over the store: a story
     # that was gathered but is still awaiting a summary must not be stepped
     # over by a watermark it never appeared under, or it would never run.
@@ -129,6 +133,7 @@ def _describe(path: Path) -> Edition | None:
         size=size,
         has_items=bool(data.get("items")),
         content=str(data.get("content") or ""),
+        since=str(data.get("since") or ""),
         watermark=str(data.get("watermark") or ""),
     )
 
@@ -156,17 +161,9 @@ def readable(cache_dir: Path) -> list[Edition]:
 def previous(cache_dir: Path, content: str) -> Edition | None:
     """The last edition published from *different* content than `content`.
 
-    Matched on the content token rather than just "the newest snapshot",
-    because the edition key also moves when sources.toml changes. Re-filing a
-    source into another column should re-lay-out the same articles, not start
-    a fresh window that skips them all and leaves the reader a blank paper
-    until the next gather.
-
     A snapshot from before editions recorded a token has none to compare, and
     counts as different: it was published by an older build, so it is
-    unambiguously in the past. Skipping it instead would make the first
-    edition after an upgrade start from nowhere and re-publish the entire
-    store in one go.
+    unambiguously in the past.
     """
     for row in readable(cache_dir):
         if row.content != content:
@@ -174,17 +171,50 @@ def previous(cache_dir: Path, content: str) -> Edition | None:
     return None
 
 
+def _same_content(cache_dir: Path, content: str) -> Edition | None:
+    """An edition already published from exactly this store state.
+
+    Only meaningful for a real token, so a store with nothing in it — whose
+    `max_fetched_at` is the empty string — never matches one.
+    """
+    if not content:
+        return None
+    return next(
+        (r for r in readable(cache_dir) if r.content == content), None
+    )
+
+
+NO_PREVIOUS_WINDOW = timedelta(hours=30)
+
+
 def boundary(cache_dir: Path, content: str) -> str | None:
     """The `fetched_at` an edition built from `content` should start after.
 
-    None when there is no previous edition to follow — the first paper carries
-    everything the store has ready.
+    Three cases, in order:
+
+    1. This store state has already been published, under a different key —
+       someone re-filed a source in sources.toml. Re-use the window that build
+       ran with, so the same articles come back laid out the new way. Starting
+       a fresh window here would skip every one of them and hand the reader a
+       blank paper until the next gather.
+    2. There is a previous edition. Start at its high-water mark, so this
+       paper picks up exactly where that one stopped.
+    3. There is no published history — a fresh install, or an archive that has
+       been cleared. Fall back to `NO_PREVIOUS_WINDOW` ago. Clock-dependent,
+       unlike a watermark, but there is no history to stay consistent with.
     """
+    same = _same_content(cache_dir, content)
+    if same is not None and same.since:
+        return same.since
+
     prev = previous(cache_dir, content)
-    if prev is None:
-        return None
-    # Snapshots written before editions recorded a watermark still pin down a
-    # moment: anything gathered after that paper was built is new to a reader
-    # who has seen it. Same format on both sides (UTC isoformat to the second),
-    # so the comparison is sound.
-    return prev.watermark or prev.built_at or None
+    if prev is not None:
+        # Snapshots written before editions recorded a watermark still pin down
+        # a moment: anything gathered after that paper was built is new to a
+        # reader who has seen it. Same format on both sides (UTC isoformat to
+        # the second), so the comparison is sound.
+        return prev.watermark or prev.built_at or None
+
+    return (
+        datetime.now(timezone.utc) - NO_PREVIOUS_WINDOW
+    ).isoformat(timespec="seconds")

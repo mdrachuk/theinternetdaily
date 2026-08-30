@@ -78,7 +78,9 @@ async def build_edition_for_key(
             # empty — and it would become the boundary the *next* edition
             # starts from, with no watermark to offer it.
             return ed.build([], key=key, date=today, built_at="")
-        return archive.record(cache, key, today, articles, content=content)
+        return archive.record(
+            cache, key, today, articles, content=content, since=since
+        )
 
 
 async def warm_icons(edition: ed.Edition) -> int:

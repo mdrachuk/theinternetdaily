@@ -6,6 +6,7 @@ directory, which is exactly what a real ingest leaves behind.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -131,14 +132,66 @@ def test_record_stamps_the_newest_gather_time_it_carried(cache):
         _article(0, fetched_at="2026-08-12T06:00:00+00:00"),
         _article(1, fetched_at="2026-08-12T06:00:09+00:00"),
     ]
-    archive.record(cache, "a" * 24, "2026-08-12", articles, content="tok-1")
+    archive.record(cache, "a" * 24, "2026-08-12", articles, content="tok-1",
+                   since="2026-08-11T06:00:00+00:00")
     (e,) = archive.editions(cache)
     assert e.watermark == "2026-08-12T06:00:09+00:00"
+    assert e.since == "2026-08-11T06:00:00+00:00"
     assert e.content == "tok-1"
 
 
-def test_boundary_is_none_for_the_very_first_edition(cache):
-    assert archive.boundary(cache, "tok-1") is None
+def test_boundary_falls_back_to_a_window_with_no_previous_edition(cache):
+    """A fresh install, or an archive that has been cleared. The store keeps
+    every row it ever fetched, so "no predecessor" must not mean "everything":
+    it means the last NO_PREVIOUS_WINDOW."""
+    from datetime import datetime, timedelta, timezone
+
+    got = archive.boundary(cache, "tok-1")
+    assert got is not None
+    expected = datetime.now(timezone.utc) - archive.NO_PREVIOUS_WINDOW
+    # Parsed rather than string-compared: the assertion is about the instant,
+    # and a second can tick over between the call and this line.
+    assert abs(
+        (datetime.fromisoformat(got) - expected).total_seconds()
+    ) < 5
+    assert archive.NO_PREVIOUS_WINDOW == timedelta(hours=30)
+
+
+async def test_a_cleared_archive_publishes_the_window_not_the_whole_store(
+    tmp_path, monkeypatch
+):
+    """The case that made this rule necessary: an operator deletes the latest
+    edition and re-ingests. The next paper must be the recent news, not every
+    article the store has accumulated since it was first set up."""
+    from tid import jobs
+    from tid.store import ArticleRow, SqliteStore, url_hash
+
+    monkeypatch.setenv("TID_CACHE", str(tmp_path / "cache"))
+    store = SqliteStore(tmp_path / "state.db")
+    now = datetime.now(timezone.utc)
+
+    def _row(title, hours_ago):
+        url = f"http://old.invalid/{title}"
+        return ArticleRow(
+            id=url_hash(url), url=url, title=title, source="Src",
+            text="body", summary="lede", body="rewritten",
+            fetched_at=(now - timedelta(hours=hours_ago))
+                       .isoformat(timespec="seconds"),
+        )
+
+    try:
+        await store.upsert_rows([
+            _row("ancient", 24 * 20),   # three weeks of backlog
+            _row("old", 40),            # outside the window
+            _row("recent", 6),          # inside it
+        ])
+        sources = [{"name": "Src", "kind": "rss", "url": "http://x.invalid"}]
+        key = await jobs.current_key(store, sources)
+        built = await jobs.build_edition_for_key(key, store, sources)
+    finally:
+        await store.close()
+
+    assert [i.title for i in built.items] == ["recent"]
 
 
 def test_boundary_follows_the_last_edition_from_other_content(cache):
@@ -148,14 +201,15 @@ def test_boundary_follows_the_last_edition_from_other_content(cache):
     assert archive.boundary(cache, "tok-2") == "2026-08-12T06:00:00+00:00"
 
 
-def test_boundary_ignores_an_edition_built_from_the_same_content(cache):
+def test_boundary_reuses_the_window_of_an_edition_from_the_same_content(cache):
     """Re-filing a source in sources.toml moves the edition key without
-    gathering a thing. The new key must re-lay-out the same articles, not
-    start a window after them and hand the reader a blank paper."""
+    gathering a thing. The new key must re-lay-out the same articles, so it
+    has to run the same window again — not start a fresh one after them, which
+    would hand the reader a blank paper until the next gather."""
     archive.record(cache, "a" * 24, "2026-08-12",
                    [_article(0, fetched_at="2026-08-12T06:00:00+00:00")],
-                   content="tok-1")
-    assert archive.boundary(cache, "tok-1") is None
+                   content="tok-1", since="2026-08-11T06:00:00+00:00")
+    assert archive.boundary(cache, "tok-1") == "2026-08-11T06:00:00+00:00"
 
 
 def test_boundary_falls_back_to_built_at_on_a_snapshot_from_an_older_build(cache):
@@ -167,6 +221,48 @@ def test_boundary_falls_back_to_built_at_on_a_snapshot_from_an_older_build(cache
     written = json.loads((cache / ("a" * 24 + ".json")).read_text())
     assert "content" not in written and "watermark" not in written
     assert archive.boundary(cache, "tok-1") == "2026-08-12T06:00:00+00:00"
+
+
+async def test_refiling_a_source_re_lays_out_the_same_paper(
+    tmp_path, monkeypatch
+):
+    """The full round trip for case 1: publish an edition, then edit
+    sources.toml without gathering anything. The key moves, so a new edition is
+    assembled — and it has to carry the same articles under the new layout,
+    not an empty window."""
+    from tid import jobs
+    from tid.store import ArticleRow, SqliteStore, url_hash
+
+    monkeypatch.setenv("TID_CACHE", str(tmp_path / "cache"))
+    store = SqliteStore(tmp_path / "state.db")
+    now = datetime.now(timezone.utc)
+    url = "http://x.invalid/a"
+    sources = [{"name": "Src", "kind": "rss", "url": "http://x.invalid",
+                "section": "News"}]
+    try:
+        await store.upsert_rows([ArticleRow(
+            id=url_hash(url), url=url, title="Only Story", source="Src",
+            text="body", summary="lede", body="rewritten",
+            fetched_at=(now - timedelta(hours=2)).isoformat(timespec="seconds"),
+        )])
+        first = await jobs.build_edition_for_key(
+            await jobs.current_key(store, sources), store, sources
+        )
+        assert [i.title for i in first.items] == ["Only Story"]
+        assert first.lead.section == "News"
+
+        # Re-filed into another column. Nothing gathered in between.
+        refiled = [dict(sources[0], section="Science")]
+        second_key = await jobs.current_key(store, refiled)
+        assert second_key != first.key
+        second = await jobs.build_edition_for_key(second_key, store, refiled)
+    finally:
+        await store.close()
+
+    assert [i.title for i in second.items] == ["Only Story"]
+    # Same story, re-filed: the layout followed the config, the window did not
+    # move out from under it.
+    assert second.lead.section == "Science"
 
 
 @pytest.mark.parametrize("key", [
