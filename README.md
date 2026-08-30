@@ -276,15 +276,18 @@ only thing that genuinely bounds how many LLM jobs hit one GPU at a time.
 
 **The front page** (`/`) — a masthead, then:
 
-- **The lead**: the top story from the first section that has a summary, with
-  its dek and its image.
-- **Two stories beside it**, one from each of the next sections, so the top of
+- **The lead**: the main story of the day's most significant topic, with its
+  dek and its image.
+- **Two stories beside it**, one from each of the next topics, so the top of
   the page is a summary of the whole paper.
-- **Section columns** (up to four): each one's newest story with a dek, then
-  three more headlines.
-- **Below the fold**, every section again, carrying everything the front page
+- **Topic columns** (up to four): each one's main story with a dek, then three
+  more headlines.
+- **Below the fold**, every topic again, carrying everything the front page
   did not have room for: a big story on the left, the rest in newspaper
   columns beside it.
+
+The columns are not fixed. They are named for each edition by reading it —
+see [Topics](#topics-the-sections-are-named-per-edition).
 
 Every headline is a link to the source, and every one has a **Preview** that
 opens the dek and the opening lines in a drawer, plus a link to the article's
@@ -297,9 +300,9 @@ renders through MathJax, which is loaded *only* on pages that contain some.
 All non-English source content is translated to English during the rewrite
 step; you can disable that in the prompt if you don't want it.
 
-**The subscriptions page** (`/sources`) — every feed with its section, its
-medium, how far back it gathers and how much it contributed to the latest
-edition. It is a view of `sources.toml`, not an editor for it.
+**The subscriptions page** (`/sources`) — every feed with its fallback
+section, its medium, how far back it gathers and how much it contributed to
+the latest edition. It is a view of `sources.toml`, not an editor for it.
 
 **The archive** — every edition ever assembled stays at its own URL, exactly
 as it was published.
@@ -331,6 +334,10 @@ as it was published.
        ┌─────────┐               │
        │ rewrite │ ─── LLM       │
        └───┬─────┘               │
+           ▼                     │
+       ┌─────────┐               │
+       │ topics  │ ─── LLM       │
+       └───┬─────┘               │
            ▼
        SQLite store (state.db)
            │
@@ -349,7 +356,7 @@ as it was published.
         the paper
 ```
 
-Five stages. The first four are idempotent and resumable; the fifth is
+Six stages. The first five are idempotent and resumable; the sixth is
 pure and runs per request:
 
 1. **gather** — pulls new items from each source, runs `trafilatura` to
@@ -360,20 +367,25 @@ pure and runs per request:
 3. **rewrite** — batches up to 8 articles per LLM call and produces a
    clean, properly-paragraphed, translated-to-English version of each
    article body for the renderer. Preserves code fences and `$math$` exactly.
-4. **assemble** — pulls every ready article no previous edition carried, from
+4. **topics** — reads the whole set of articles that will be in the next
+   edition and decides what its sections are. Three passes:
+   one call names the topics, one call per article files it under the most
+   specific one, one call per topic picks that topic's main stories. See
+   [Topics](#topics-the-sections-are-named-per-edition).
+5. **assemble** — pulls every ready article no previous edition carried, from
    every source, writes them to a snapshot keyed by a hash of "what's in the
    store" + "what's in sources.toml", and stamps `rendered_at` on each one so
    the next edition knows to skip it. This is cheap: a store read and a JSON
    write, no LLM and no typesetting, which is why it happens inline on a cache
    miss rather than through the queue.
-5. **lay out** — `tid/edition.py` turns that flat list into a front page:
+6. **lay out** — `tid/edition.py` turns that flat list into a front page:
    which story leads, which two go beside it, what each column holds, what
    continues below. It is pure and it runs per request, so the layout is
    *not* stored — an improvement to the front page reaches editions published
    last month too.
 
 A background `APScheduler` job (`AsyncIOScheduler`, on the app's event loop)
-runs steps 1–3 every 4 hours (configurable). Each ingest ends by assembling
+runs steps 1–4 every 4 hours (configurable). Each ingest ends by assembling
 the edition and caching its source marks, so the archive entry exists — and
 the paper loads without a single outbound request — whether or not anyone
 visits.
@@ -392,7 +404,7 @@ visits.
 | `GET /icon/{domain}.png`  | a source mark, fetched once and cached on disk     |
 | `GET /healthz`            | liveness probe (returns `ok`)                      |
 | `GET /readyz`             | readiness probe — pings the store, parses config   |
-| `POST /ingest`            | manual kick of gather → summarize → rewrite        |
+| `POST /ingest`            | manual kick of gather → summarize → rewrite → topics |
 
 Both edition routes take `?m=read`, `?m=watch` or `?m=listen` to show one
 medium only; the whole edition is laid out again from what is left, so a
@@ -436,16 +448,17 @@ grows by a few hundred MB a year. There is no automatic pruning; `rm` the old
 Sources live in [`sources.toml`](sources.toml). Open it, copy a block, edit,
 restart the container, refresh.
 
-The order of `[[source]]` blocks decides the shape of the paper. Sections
-appear in the order their first source does, so the section at the top of the
-file is the one the lead comes from, and the first four sections get the front
-page. Everything else runs below the fold.
+The order of `[[source]]` blocks decides which sources are gathered, and — as
+a fallback — the shape of the paper. Normally the columns are named per
+edition by the [topics stage](#topics-the-sections-are-named-per-edition);
+`section` is what the layout falls back to for an article that stage never
+filed, and what the whole paper falls back to on a day it cannot run.
 
 Two fields shape the layout rather than the contents, and both are optional:
 
 | field     | default       | meaning |
 |-----------|---------------|---------|
-| `section` | the source name | the column this source files under. Sources sharing a section share a column and interleave by date, so "The Guardian" and "Kyiv Independent" both under `section = "World"` read as one column, not two lists. |
+| `section` | the source name | the column this source falls back to when the topics stage did not file its articles. Sources sharing a section share a column and interleave by date, so "The Guardian" and "Kyiv Independent" both under `section = "World"` read as one column, not two lists. |
 | `medium`  | `"read"`      | `read`, `watch` or `listen`. Drives the glyph in the byline and the filter row in the nav. |
 
 Note `medium` is not `kind`: `kind` is *how we fetch it* (`rss`/`hn`),
@@ -464,7 +477,7 @@ hardcoded.
 |----------------|------|---------|---------|
 | `name`         | string | required | display label, shown in every byline |
 | `kind`         | string | required | must be `"hn"` |
-| `section`      | string | the name | front-page column this files under |
+| `section`      | string | the name | fallback column, when the topics stage does not file it |
 | `medium`       | string | `"read"` | `read`, `watch` or `listen` |
 | `since_hours`  | int  | `48`     | only consider stories submitted in the last N hours |
 | `min_points`   | int  | `50`     | story must have at least this many points to qualify |
@@ -490,7 +503,7 @@ RSS 0.9/1.0/2.0 and Atom 1.0 — every blog and most news sites work.
 | `name`        | string | required | display label, shown in every byline |
 | `kind`        | string | required | must be `"rss"` |
 | `url`         | string | required | feed URL |
-| `section`     | string | the name | front-page column this files under |
+| `section`     | string | the name | fallback column, when the topics stage does not file it |
 | `medium`      | string | `"read"` | `read`, `watch` or `listen` |
 | `since_hours` | int    | unset    | don't gather articles published more than N hours ago (uses the feed's `published`/`updated` date; articles with no date are always kept) |
 
@@ -536,12 +549,71 @@ If a new edition comes out empty — you edited `sources.toml`, which moves the
 edition key without gathering anything — the front page keeps showing the last
 one rather than going blank. Section and medium are re-read from
 `sources.toml` on every render, so re-filing a source into another column
-shows up immediately.
+shows up immediately — for the articles the topics stage did not file, which
+carry their own column name and are not moved by a config edit.
 
 > **On the reading time.** **30–60 articles** is a comfortable 30–60 minute
 > read, and about what fills a front page and its continuation without either
 > looking thin. Claude's summaries are dense; volume isn't quality. An empty
 > section on a slow day is cleaner than padding.
+
+## Topics: the sections are named per edition
+
+Sections used to be pinned to sources: every MacRumors story under "Apple",
+forever, because `sources.toml` said so. That is a subscription list wearing
+an editor's hat. A real front page is organised by what happened today — when
+three feeds all file on the same outage, the paper should carry one column
+about the outage, not three columns named after the feeds.
+
+So the last stage of every ingest reads the edition and names its own sections
+(`tid/topics.py`). Three passes, each one a separate kind of judgement:
+
+1. **Name the topics** — *one* call carrying every headline and summary in the
+   edition. It comes back with 3–8 topics, ordered by significance, each a
+   1–3 word section head with a one-line blurb. One call and not one per
+   article on purpose: "what are today's sections" is a judgement about the
+   whole paper, and an article-at-a-time process would invent a new topic for
+   every story and never notice that two of them are the same.
+2. **File each article** — one call per article, carrying that article and the
+   whole topic list, choosing the single **most specific** topic it belongs to.
+   Deliberately not batched: batching makes a model consistent with its
+   neighbours in the batch rather than with the list. On a backend with guided
+   decoding (vLLM, Ollama) the reply is an enum over the topic names, so an
+   invented topic is impossible rather than merely discouraged.
+3. **Pick the mains** — one call per topic, carrying that topic's articles,
+   naming which of them carry the section and in what order. One main for a
+   small topic, up to three for a large one. This is what the layout hangs on:
+   the lead, the two stories beside it and the top of each column are mains,
+   and everything else follows by date underneath them.
+
+The result is stored per article (`topic`, `topic_order`, `main_rank`) and
+travels into the edition snapshot, so an archived edition still reads as the
+paper it was even after the store has moved on.
+
+**It is re-run over the whole unpublished set every ingest**, not just over
+new articles. A topic set describes *one* edition; a story that was gathered
+yesterday and still has not been published belongs under this paper's
+sections, under this paper's names.
+
+**Every pass degrades to nothing rather than to something wrong.** No topics
+named, an unparseable reply, a topic the model made up — the article simply
+keeps no topic and the layout files it under its `sources.toml` section
+exactly as before. A paper laid out the old way is a much smaller failure than
+a paper whose columns are mislabelled.
+
+Run it on its own against whatever is in the store:
+
+```bash
+docker compose exec tid tid topics
+```
+
+**What it costs.** One call for the edition, one per article, one per topic —
+so an edition of 50 articles is ~59 calls, but all of them are small: a
+headline and a 40-word summary in, a topic name out. The bodies never leave
+the store. On Haiku that is a fraction of what the rewrite stage costs for the
+same edition. On a local 12B model the topic-naming prompt is the one that
+scales with the size of the edition, so `BatchLimits.topic_max_articles` caps
+it at the 60 newest headlines (`VLLM_LIMITS`) to stay inside a 16k window.
 
 ## Scheduling ingests
 
@@ -694,6 +766,7 @@ export ANTHROPIC_API_KEY=sk-ant-...   # or: export LLM_BACKEND=ollama OLLAMA_HOS
 uv run tid gather       # fetch + extract
 uv run tid summarize    # LLM pass 1 (batched)
 uv run tid rewrite      # LLM pass 2 (batched)
+uv run tid topics       # LLM pass 3: name the edition's sections and file it
 uv run tid render       # xelatex → PDF
 # or all of the above in sequence:
 uv run tid build
@@ -743,6 +816,8 @@ with ~50 articles:
 
 - Summarize: 6 batched calls (~8 articles each)
 - Rewrite: 6 batched calls
+- Topics: 1 call for the edition + 1 per article + 1 per topic (~57), all of
+  them small — a headline and a 40-word summary in, a topic name out
 - World-news compress: 1 call
 
 Order-of-magnitude: a few cents to a few tens of cents per cycle depending on
@@ -788,6 +863,7 @@ theinternetdaily/
 │   ├── testing.py        # FakeBackend, so CI needs no GPU or API key
 │   ├── summarize.py      # summarization prompts + batching
 │   ├── rewrite.py        # rewrite prompts + batching
+│   ├── topics.py         # name the edition's topics, file it, pick the mains
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
 │   ├── config.py         # env-derived configuration (read per call)
 │   ├── jobs.py           # units of work a queue can run

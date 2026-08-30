@@ -163,7 +163,13 @@ def ingest_running() -> bool:
 
 
 async def ingest() -> None:
-    """gather → summarize → rewrite, then the optional delivery hook."""
+    """gather → summarize → rewrite → topics, then the optional delivery hook.
+
+    Topics run last inside `cmd_ingest` and before the edition is assembled,
+    which is the only order that works: the stage reads the finished articles
+    to decide what this edition's sections are, and the assemble step then
+    lays the paper out along them.
+    """
     if _ingest_lock.locked():
         return
     async with _ingest_lock:

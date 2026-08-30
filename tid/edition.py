@@ -13,11 +13,18 @@ Vocabulary, borrowed from the page it produces:
 
   lead      the one story across the top-left, with a dek and an image
   side      two stories stacked beside the lead, headline only
-  sections  the front-page columns, one per `section` in sources.toml
+  sections  the front-page columns, one per topic in the edition
   below     the continuation of every section, further down the same page
 
 An article appears exactly once. The front page skims the top off each
 section; `below` carries whatever the skim left behind.
+
+What a column *is* comes from the topic stage (`tid.topics`), which reads the
+edition and names its own sections: `topic` is the column, `topic_order` is
+where that column sits, and `main_rank` says which of its stories carry it. An
+article the stage never filed — because it did not run, or could not place the
+piece — falls back to its `sources.toml` section, and a paper where that is
+true of every article is laid out exactly as it was before topics existed.
 """
 from __future__ import annotations
 
@@ -54,6 +61,24 @@ class Item:
     iso_date: str = ""
     image: str | None = None
     body: str = ""
+    topic: str = ""                 # the edition's own filing; "" = unfiled
+    topic_order: int | None = None  # where that topic sits in the edition
+    main_rank: int | None = None    # 0 = the topic's lead story; None = not main
+
+    @property
+    def group(self) -> str:
+        """The column this article appears under, and its heading.
+
+        The topic when the stage filed it, the `sources.toml` section when it
+        did not. One property rather than an overwritten `section` so a
+        snapshot keeps both: re-filing a source in `sources.toml` still moves
+        the articles topics never reached.
+        """
+        return self.topic or self.section or self.source
+
+    @property
+    def is_main(self) -> bool:
+        return self.main_rank is not None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -123,6 +148,17 @@ def reading_time(text: str) -> str:
     return f"{max(1, round(words / WPM))} min"
 
 
+def _to_int(value: Any) -> int | None:
+    """An optional rank from a store row or a snapshot. Junk reads as absent —
+    a bad `main_rank` must demote an article, never crash the page."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_item(a: dict) -> Item:
     body = a.get("text") or ""
     return Item(
@@ -141,30 +177,68 @@ def _to_item(a: dict) -> Item:
         iso_date=a.get("iso_date") or "",
         image=a.get("image") or None,
         body=body,
+        topic=(a.get("topic") or "").strip(),
+        topic_order=_to_int(a.get("topic_order")),
+        main_rank=_to_int(a.get("main_rank")),
     )
 
 
-def _group_by_section(items: Iterable[Item]) -> list[tuple[str, list[Item]]]:
-    """Section name → its articles, newest first, in first-appearance order.
+def _sorted_group(rows: list[Item]) -> list[Item]:
+    """One column's articles: the main stories first, then the rest by date.
 
-    Insertion order is sources.toml order, so the first section on the page is
-    the first one configured. Within a section, sources interleave by date —
-    two feeds filed under "World" read as one column, not as two lists.
+    The mains are the topic stage's answer to "what is this section about
+    today", and the layout's job is to put them where a reader looks first —
+    the top of the column, and through `_take_lead`/`_take_side` the front
+    page. Everything else keeps the newest-first order it always had, so an
+    unlabelled column is ordered exactly as it was before topics existed.
+    """
+    mains = sorted((r for r in rows if r.is_main), key=lambda i: i.main_rank)
+    rest = sorted(
+        (r for r in rows if not r.is_main),
+        key=lambda i: i.iso_date, reverse=True,
+    )
+    return mains + rest
+
+
+def _group_order(rows: list[Item], appearance: int) -> tuple[int, int, int]:
+    """Sort key for a whole column.
+
+    Topics come first, in the order the topic stage put them: it ranked them by
+    significance, and that ranking is what decides which column carries the
+    lead. Unlabelled columns keep sources.toml order behind them, which is
+    where a paper with no topics at all stays.
+    """
+    orders = [r.topic_order for r in rows if r.topic_order is not None]
+    if orders:
+        return (0, min(orders), appearance)
+    return (1, 0, appearance)
+
+
+def _group_by_topic(items: Iterable[Item]) -> list[tuple[str, list[Item]]]:
+    """Column name → its articles, mains first and then newest first.
+
+    Columns are ordered by the topic stage's ranking, falling back to
+    first-appearance (that is, sources.toml) order for anything it did not
+    file. Within a column, sources interleave — two feeds that both filed on
+    the same topic read as one column, not as two lists.
     """
     groups: dict[str, list[Item]] = {}
     for it in items:
-        groups.setdefault(it.section, []).append(it)
-    return [
-        (name, sorted(rows, key=lambda i: i.iso_date, reverse=True))
-        for name, rows in groups.items()
-    ]
+        groups.setdefault(it.group, []).append(it)
+    ordered = sorted(
+        enumerate(groups.items()),
+        key=lambda pair: _group_order(pair[1][1], pair[0]),
+    )
+    return [(name, _sorted_group(rows)) for _, (name, rows) in ordered]
 
 
 def _take_lead(groups: list[tuple[str, list[Item]]]) -> tuple[Item | None, str]:
     """The front-page lead, and the section it came out of.
 
-    The top of the first section that has a dek: a lead runs with a summary
-    underneath it, and a headline alone in that slot reads like a mistake.
+    The top of the first section that has a dek — which, once the topic stage
+    has run, is the main story of the most significant topic. A lead runs with
+    a summary underneath it, and a headline alone in that slot reads like a
+    mistake.
     Falling back to the very first article keeps a dekless edition — a fresh
     store where summarizing has not run yet — from having no lead at all.
     """
@@ -209,7 +283,7 @@ def build(
 ) -> Edition:
     """Lay a flat article list out as a front page plus its continuation."""
     items = [_to_item(a) for a in articles if (a.get("title") or "").strip()]
-    groups = _group_by_section(items)
+    groups = _group_by_topic(items)
 
     lead, lead_section = _take_lead(groups)
     side = _take_side(groups, lead_section)
@@ -271,6 +345,10 @@ def refiled(edition: Edition, sources: list[dict]) -> Edition:
     Snapshots bake in the values that were live when they were written, so the
     fix is to re-apply them on the way out — the articles are untouched, and
     `build` re-runs anyway on every render.
+
+    An article the topic stage filed is not moved by this: its column is the
+    topic, and `section` is only the fallback underneath it. Editing
+    sources.toml re-columns exactly the articles topics never reached.
     """
     by_source = {s.get("name"): s for s in sources}
     kept = []
