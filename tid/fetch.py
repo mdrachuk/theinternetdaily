@@ -4,6 +4,7 @@ import asyncio
 import calendar
 import html
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,40 @@ class RawItem:
     # RSS). Used for window filtering. The article's *own* publication date
     # comes from extract.py via trafilatura metadata.
     surfaced: str | None = None  # ISO date "YYYY-MM-DD" or None
+    # Lead image advertised by the feed itself. Cheaper and more reliable than
+    # the page's og:image (which extract.py falls back to), because a feed
+    # names the image it considers the article's own.
+    image: str | None = None
+
+
+# Feeds advertise the article image in three different places, none of them
+# required, and a fair number inline it in the summary HTML instead.
+_IMG_IN_HTML = re.compile(r'<img[^>]+src=["\']([^"\']+)', re.I)
+
+
+def _entry_image(entry) -> str | None:
+    """The best image URL a feed entry offers, or None."""
+    for thumb in getattr(entry, "media_thumbnail", None) or ():
+        if isinstance(thumb, dict) and thumb.get("url"):
+            return thumb["url"]
+    for media in getattr(entry, "media_content", None) or ():
+        if not isinstance(media, dict):
+            continue
+        if media.get("url") and str(media.get("medium", "image")) == "image":
+            return media["url"]
+    for enc in getattr(entry, "enclosures", None) or ():
+        href = enc.get("href") if isinstance(enc, dict) else None
+        if href and str(enc.get("type", "")).startswith("image/"):
+            return href
+    # Last resort: the first <img> in the entry's own HTML.
+    blobs = [getattr(entry, "summary", "") or ""]
+    blobs += [c.get("value", "") for c in getattr(entry, "content", None) or ()
+              if isinstance(c, dict)]
+    for blob in blobs:
+        m = _IMG_IN_HTML.search(blob)
+        if m:
+            return html.unescape(m.group(1))
+    return None
 
 
 # Algolia HN search. Returns stories matching the numericFilters, ranked by
@@ -125,5 +160,8 @@ async def fetch_rss(
             if calendar.timegm(parsed) < cutoff:
                 continue
         surfaced = time.strftime("%Y-%m-%d", parsed) if parsed else None
-        out.append(RawItem(source=source_name, url=url, title=title, surfaced=surfaced))
+        out.append(RawItem(
+            source=source_name, url=url, title=title,
+            surfaced=surfaced, image=_entry_image(entry),
+        ))
     return out

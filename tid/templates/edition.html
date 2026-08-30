@@ -1,0 +1,97 @@
+{% extends "layout.html" %}
+{% from "_macros.html" import byline, headline, photo %}
+{% block title %}The Internet Daily — {{ edition.date|human_date }}{% endblock %}
+
+{% block body %}
+    <nav class="nav mono">
+      <div class="nav-days">
+        {%- if prev %}<a class="step" href="{{ prev.href }}" rel="prev" id="nav-prev">← {{ prev.label }}</a>
+        {%- else %}<span class="step off">← Earliest edition</span>{% endif %}
+        <span class="day">{{ edition.date|human_date }}</span>
+        {%- if next %}<a class="step" href="{{ next.href }}" rel="next" id="nav-next">{{ next.label }} →</a>
+        {%- else %}<span class="step off">Latest edition</span>{% endif %}
+        {%- if edition.built_at|human_time %}<span class="assembled">Assembled {{ edition.built_at|human_time }}</span>{% endif %}
+      </div>
+      <div class="nav-tools">
+        {%- for f in filters %}
+        <a class="chip{% if f.on %} on{% endif %}" href="{{ f.href }}" title="{{ f.title }}">{{ f.label }}{{ f.medium|filter_glyph }}</a>
+        {%- endfor %}
+        <a class="link" href="/sources">Sources</a>
+      </div>
+    </nav>
+
+{% if not edition.lead %}
+    <div class="empty">
+      <h2>Nothing filed yet</h2>
+      <p>{{ empty_note }}</p>
+      <p><a class="btn" href="/sources">See the sources</a></p>
+    </div>
+{% else %}
+    <div class="front">
+      <div class="front-inner">
+        <div class="lead-grid">
+          {{ headline(edition.lead, edition.key, cls="lead", tag="h2", dek=True, top=True, actions=True) }}
+          <aside class="lead-aside">
+            {%- if edition.lead.image %}{{ photo(edition.lead.image) }}{% endif %}
+            {%- if edition.side %}
+            <div class="lead-side">
+              {%- for it in edition.side %}{{ headline(it, edition.key, tag="h3") }}{% endfor %}
+            </div>
+            {%- endif %}
+          </aside>
+        </div>
+
+        {%- if edition.sections %}
+        <div class="cols cols-{{ edition.sections|length }}">
+          {%- for sec in edition.sections %}
+          <section class="col">
+            <h2>{{ sec.name }}</h2>
+            {{ headline(sec.top, edition.key, cls="col-top", dek=True) }}
+            {%- if sec.image %}{{ photo(sec.image) }}{% endif %}
+            {%- for it in sec.rest %}{{ headline(it, edition.key, cls="col-item") }}{% endfor %}
+          </section>
+          {%- endfor %}
+        </div>
+        {%- endif %}
+      </div>
+    </div>
+
+    {%- for sec in edition.below %}
+    <section class="band">
+      <h2>{{ sec.name }}</h2>
+      <div class="band-grid{% if not (sec.rest or sec.image) %} solo{% endif %}">
+        {{ headline(sec.top, edition.key, cls="band-top", tag="h3", dek=True, top=True) }}
+        {%- if sec.rest or sec.image %}
+        <div class="stacks">
+          {%- for it in sec.rest %}{{ headline(it, edition.key) }}{% endfor %}
+          {%- if sec.image %}{{ photo(sec.image) }}{% endif %}
+        </div>
+        {%- endif %}
+      </div>
+    </section>
+    {%- endfor %}
+{% endif %}
+{% endblock %}
+
+{% block after %}
+<div class="scrim" id="preview" hidden>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="pv-title">
+    <div class="drawer-head mono">
+      <div class="byline top" id="pv-byline"></div>
+      <button class="drawer-close" type="button" aria-label="Close preview">✕</button>
+    </div>
+    <div class="drawer-body">
+      <h2 id="pv-title"></h2>
+      <img class="photo" id="pv-image" alt="" referrerpolicy="no-referrer" hidden>
+      <p class="dek" id="pv-dek"></p>
+      <p class="excerpt" id="pv-excerpt"></p>
+      <div class="drawer-actions">
+        <a class="btn" id="pv-read" href="#">Read the full text</a>
+        <a class="btn quiet" id="pv-source" href="#" target="_blank" rel="noopener noreferrer">Open at source ↗</a>
+      </div>
+      <p class="note small">The full text is stored here, rewritten and offline. Esc closes · ← → move between editions.</p>
+    </div>
+  </aside>
+</div>
+<script>{% include "app.js" %}</script>
+{% endblock %}

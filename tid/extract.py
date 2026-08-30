@@ -15,6 +15,7 @@ class Article:
     title: str
     text: str
     published: str | None = None  # ISO date from page metadata, may be None
+    image: str | None = None      # og:image from page metadata, may be None
 
 
 async def fetch_html(client: httpx.AsyncClient, url: str) -> str | None:
@@ -44,13 +45,21 @@ def _parse(html: str, source: str, url: str, title: str) -> Article | None:
     if not text or len(text) < 200:
         return None
     published: str | None = None
+    image: str | None = None
     try:
         md = extract_metadata(html)
         if md and md.date:
             published = md.date  # trafilatura returns "YYYY-MM-DD"
+        # og:image / twitter:image. Only absolute URLs are usable: the page is
+        # rendered on our own origin, so a site-relative path would 404.
+        if md and getattr(md, "image", None):
+            candidate = str(md.image)
+            if candidate.startswith(("http://", "https://")):
+                image = candidate
     except Exception:
         pass
-    return Article(source=source, url=url, title=title, text=text, published=published)
+    return Article(source=source, url=url, title=title, text=text,
+                   published=published, image=image)
 
 
 async def extract(

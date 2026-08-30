@@ -12,10 +12,12 @@ from tid.store import ArticleRow, SqliteStore, open_store, url_hash
 
 
 async def _add(store, title, *, text="body text", published=None,
-               surfaced=None, source="Src", summary=None, body=None):
+               surfaced=None, source="Src", summary=None, body=None,
+               image=None):
     url = f"http://example.invalid/{title}"
     await store.insert_raw(
-        source, url, title, text=text, surfaced=surfaced, published=published
+        source, url, title, text=text, surfaced=surfaced, published=published,
+        image=image,
     )
     if summary is not None:
         await store.set_summary(url_hash(url), summary)
@@ -59,6 +61,24 @@ async def test_reinsert_backfills_a_missing_date_but_keeps_the_text(store):
     assert len(rows) == 1
     assert rows[0].text == "body text"
     assert rows[0].surfaced == "2030-01-01"
+
+
+async def test_image_is_stored_and_backfilled_on_a_regather(store):
+    """A feed that only starts advertising an image later must still get it
+    onto the row it already wrote — that is how an existing install picks
+    images up without re-extracting everything."""
+    await _add(store, "pic", summary="s")
+    (row,) = await store.latest_per_source("Src", 5)
+    assert row.image is None
+
+    await _add(store, "pic", image="https://cdn.invalid/a.jpg")
+    (row,) = await store.latest_per_source("Src", 5)
+    assert row.image == "https://cdn.invalid/a.jpg"
+
+    # ...and a later re-gather must not overwrite it with a different one.
+    await _add(store, "pic", image="https://cdn.invalid/b.jpg")
+    (row,) = await store.latest_per_source("Src", 5)
+    assert row.image == "https://cdn.invalid/a.jpg"
 
 
 # --- summarize / rewrite --------------------------------------------------

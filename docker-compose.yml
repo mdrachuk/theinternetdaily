@@ -34,7 +34,7 @@ services:
       - INGEST_SCHEDULE=${INGEST_SCHEDULE:-}
       - INGEST_TIMEZONE=${INGEST_TIMEZONE:-UTC}
       - TID_WORKERS=${TID_WORKERS:-8}
-      # Hook to push the PDF to reMarkable after each ingest
+      # Hook run after each ingest; receives the new edition snapshot path
       - POST_INGEST_HOOK=${POST_INGEST_HOOK:-}
       - POST_INGEST_HOOK_TIMEOUT=${POST_INGEST_HOOK_TIMEOUT:-300}
     volumes:

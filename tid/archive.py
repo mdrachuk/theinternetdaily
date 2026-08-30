@@ -1,15 +1,20 @@
-"""The list of every edition that has been built.
+"""Every edition that has been assembled, kept as a snapshot on disk.
 
-The cache (`tid.cache`) is keyed by a content hash, which answers "is
-this edition still current?" but not "what did we publish last week" — the
-key carries no date and the files carry no metadata. So each build drops a
-small JSON sidecar next to its PDF, and the archive is those sidecars sorted
-newest-first.
+An edition is a JSON file in the cache directory named after its key: the
+articles it was built from, with their bodies, in the order the store handed
+them over. The *layout* is not stored — `tid.edition.build` recomputes it on
+every render, which costs microseconds and means an improvement to the front
+page reaches editions published last month too.
 
-Sidecar-less PDFs (anything cached before this module existed) still show up,
-described by what the filesystem knows: mtime for the date, size for the size,
-no article count. That keeps the index honest about older editions instead of
-hiding them.
+Snapshots are what makes yesterday's paper still readable. The store keeps
+moving: an article ages out of a source's window, a limit changes, a rewrite
+lands. Without a snapshot, "the edition of 12 August" would quietly become
+"whatever the store would produce for 12 August today", which is a different
+paper each time you open it.
+
+Editions from before this module stored items — the PDF era — still list, with
+`has_items` false. Nothing can render them as a page, and pretending they are
+gone would be worse than saying so.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .cache import pdf_path, preview_path
+from . import edition as ed
 
 # Cache keys are `hashlib.sha256(...).hexdigest()[:24]`. Anything reaching a
 # route handler as a "key" is matched against this before it is joined onto a
@@ -35,91 +40,89 @@ def is_key(value: str) -> bool:
 
 @dataclass(frozen=True)
 class Edition:
+    """One row of the archive: what a snapshot says about itself."""
     key: str
-    date: str                       # ISO date the edition was rendered for
+    date: str                       # ISO date the edition was assembled for
     built_at: str                   # ISO-8601 UTC timestamp of the build
-    articles: int | None            # None when only the PDF survives
+    articles: int | None            # None when the snapshot predates the count
     sources: dict[str, int] = field(default_factory=dict)
-    size: int = 0
-    has_preview: bool = False
+    size: int = 0                   # snapshot bytes on disk
+    has_items: bool = False         # false = PDF-era, cannot be rendered
 
 
-def sidecar_path(cache_dir: Path, key: str) -> Path:
+def snapshot_path(cache_dir: Path, key: str) -> Path:
     return cache_dir / f"{key}.json"
 
 
-def record(cache_dir: Path, key: str, date: str, articles: list[dict]) -> Path:
-    """Write the sidecar describing a freshly built edition.
+def record(cache_dir: Path, key: str, date: str, articles: list[dict]) -> ed.Edition:
+    """Write the snapshot for a freshly assembled edition, and return it.
 
     Written to a temp file and renamed, so a reader scanning the directory
-    mid-write sees either the old sidecar or the new one, never half of one.
+    mid-write sees either the old snapshot or the new one, never half of one.
     """
-    counts = Counter(a.get("source", "?") for a in articles)
-    payload = {
-        "key": key,
-        "date": date,
-        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "articles": len(articles),
-        "sources": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
-    }
-    out = sidecar_path(cache_dir, key)
+    built_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    built = ed.build(articles, key=key, date=date, built_at=built_at)
+    payload = ed.to_snapshot(built)
+    # Counted over the articles handed in, not the laid-out edition, so the
+    # number in the archive is "what the store offered", independent of how
+    # many columns the front page happened to have room for.
+    payload["sources"] = dict(sorted(
+        Counter(a.get("source", "?") for a in articles).items(),
+        key=lambda kv: -kv[1],
+    ))
+    out = snapshot_path(cache_dir, key)
+    out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, out)
-    return out
+    return built
 
 
-def _from_sidecar(cache_dir: Path, key: str, pdf: Path) -> Edition | None:
+def load(cache_dir: Path, key: str) -> ed.Edition | None:
+    """The full edition for `key`, ready to render, or None."""
+    if not is_key(key):
+        return None
     try:
-        data = json.loads(sidecar_path(cache_dir, key).read_text("utf-8"))
+        data = json.loads(snapshot_path(cache_dir, key).read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not data.get("items"):
+        return None
+    return ed.from_snapshot(data)
+
+
+def _describe(path: Path) -> Edition | None:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        size = path.stat().st_size
     except (OSError, ValueError):
         return None
     return Edition(
-        key=key,
+        key=path.stem,
         date=str(data.get("date") or ""),
         built_at=str(data.get("built_at") or ""),
         articles=data.get("articles"),
         sources=dict(data.get("sources") or {}),
-        size=pdf.stat().st_size,
-        has_preview=preview_path(cache_dir, key).exists(),
-    )
-
-
-def _from_file(cache_dir: Path, key: str, pdf: Path) -> Edition:
-    """Fallback for a PDF with no sidecar: describe it from its own mtime."""
-    stat = pdf.stat()
-    when = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-    return Edition(
-        key=key,
-        date=when.date().isoformat(),
-        built_at=when.isoformat(timespec="seconds"),
-        articles=None,
-        size=stat.st_size,
-        has_preview=preview_path(cache_dir, key).exists(),
+        size=size,
+        has_items=bool(data.get("items")),
     )
 
 
 def editions(cache_dir: Path) -> list[Edition]:
-    """Every built edition, newest build first."""
+    """Every assembled edition, newest build first."""
     if not cache_dir.is_dir():
         return []
     out: list[Edition] = []
-    for pdf in cache_dir.glob("*.pdf"):
-        key = pdf.stem
-        if not is_key(key):
+    for path in cache_dir.glob("*.json"):
+        if not is_key(path.stem):
             continue
-        try:
-            out.append(_from_sidecar(cache_dir, key, pdf)
-                       or _from_file(cache_dir, key, pdf))
-        except OSError:
-            continue  # vanished mid-scan; it simply isn't in the archive
+        row = _describe(path)
+        if row is not None:
+            out.append(row)
     out.sort(key=lambda e: (e.built_at, e.key), reverse=True)
     return out
 
 
-def find(cache_dir: Path, key: str) -> Path | None:
-    """The archived PDF for `key`, or None if the key is bogus or missing."""
-    if not is_key(key):
-        return None
-    pdf = pdf_path(cache_dir, key)
-    return pdf if pdf.exists() else None
+def readable(cache_dir: Path) -> list[Edition]:
+    """The editions a page can actually be built from, newest first."""
+    return [e for e in editions(cache_dir) if e.has_items]

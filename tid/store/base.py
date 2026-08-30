@@ -52,7 +52,8 @@ class ArticleRow:
     extracted_at: str | None = None
     summarized_at: str | None = None
     rewritten_at: str | None = None
-    rendered_at: str | None = None    # ISO date of first PDF inclusion
+    rendered_at: str | None = None    # ISO date of first edition inclusion
+    image: str | None = None          # lead image URL, from the feed or og:image
 
     def __post_init__(self) -> None:
         if not self.title_norm:
@@ -107,6 +108,7 @@ class Store(Protocol):
         text: str | None,
         surfaced: str | None = None,
         published: str | None = None,
+        image: str | None = None,
     ) -> None: ...
 
     # --- summarize ------------------------------------------------------

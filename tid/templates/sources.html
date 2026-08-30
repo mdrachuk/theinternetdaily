@@ -1,0 +1,45 @@
+{% extends "layout.html" %}
+{% block title %}Sources — The Internet Daily{% endblock %}
+
+{% block body %}
+    <nav class="nav mono">
+      <div class="nav-days">
+        <a class="step" href="/">← Back to the edition</a>
+        {%- if fetched_at %}<span class="assembled">Last gathered {{ fetched_at|human_time }}</span>{% endif %}
+      </div>
+      <div class="nav-tools">
+        <a class="link" href="/sources.json">sources.json</a>
+      </div>
+    </nav>
+
+    <div class="subs">
+      <div class="subs-head">
+        <div>
+          <div class="mono" style="font-size:9.5px;color:var(--muted)">Your subscriptions</div>
+          <h1>{{ sources|length }} source{{ '' if sources|length == 1 else 's' }}, {{ sections|length }} section{{ '' if sections|length == 1 else 's' }}</h1>
+        </div>
+        <div class="tags">
+          {%- for s in sections %}<span class="tag">{{ s }}</span>{% endfor %}
+        </div>
+      </div>
+
+      <div class="subs-list">
+        {%- for src in sources %}
+        <div class="sub">
+          {%- if src.icon %}<img src="{{ src.icon }}" alt="" width="32" height="32" loading="lazy">{% else %}<span></span>{% endif %}
+          <div>
+            <div class="name">{% if src.url %}<a href="{{ src.url }}" target="_blank" rel="noopener noreferrer">{{ src.name }}</a>{% else %}{{ src.name }}{% endif %}</div>
+            <div class="line">{{ src.section }} · {{ src.medium }}{% if src.rate %} · {{ src.rate }}{% endif %}</div>
+          </div>
+          <div class="tags">
+            <span class="tag">up to {{ src.limit }}</span>
+            {%- if src.window %}<span class="tag">{{ src.window }}</span>{% endif %}
+          </div>
+        </div>
+        {%- endfor %}
+      </div>
+
+      <p class="note">Sources live in sources.toml. Add, remove or re-file one there and it lands in the next edition.</p>
+      <p class="note small">{{ counts.total }} articles stored · {{ counts.rendered }} published · {{ counts.pending_summary }} awaiting a summary · {{ counts.pending_rewrite }} awaiting a rewrite</p>
+    </div>
+{% endblock %}

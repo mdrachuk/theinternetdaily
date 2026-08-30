@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS article (
     extracted_at   TEXT,
     summarized_at  TEXT,
     rewritten_at   TEXT,
-    rendered_at    TEXT               -- ISO date of first PDF inclusion; NULL = pending
+    rendered_at    TEXT,              -- ISO date of first edition inclusion; NULL = pending
+    image          TEXT               -- lead image URL (feed enclosure or og:image)
 );
 CREATE INDEX IF NOT EXISTS idx_title_norm  ON article(title_norm);
 CREATE INDEX IF NOT EXISTS idx_rendered_at ON article(rendered_at);
@@ -41,7 +42,7 @@ CREATE INDEX IF NOT EXISTS idx_source_date ON article(source, published, surface
 _COLUMNS = (
     "url_hash", "url", "title", "title_norm", "source", "text", "body",
     "summary", "surfaced", "published", "fetched_at", "extracted_at",
-    "summarized_at", "rewritten_at", "rendered_at",
+    "summarized_at", "rewritten_at", "rendered_at", "image",
 )
 
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM article"
@@ -49,7 +50,7 @@ _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM article"
 
 def _migrate(con: sqlite3.Connection) -> None:
     cols = {r[1] for r in con.execute("PRAGMA table_info(article)")}
-    for name in ("body", "rewritten_at", "surfaced", "published"):
+    for name in ("body", "rewritten_at", "surfaced", "published", "image"):
         if name not in cols:
             con.execute(f"ALTER TABLE article ADD COLUMN {name} TEXT")
     con.commit()
@@ -72,6 +73,7 @@ def _row(r: sqlite3.Row) -> ArticleRow:
         summarized_at=r["summarized_at"],
         rewritten_at=r["rewritten_at"],
         rendered_at=r["rendered_at"],
+        image=r["image"],
     )
 
 
@@ -120,6 +122,7 @@ class SqliteStore:
         text: str | None,
         surfaced: str | None = None,
         published: str | None = None,
+        image: str | None = None,
     ) -> None:
         def _w() -> None:
             now = now_iso()
@@ -128,14 +131,15 @@ class SqliteStore:
                 """
                 INSERT OR IGNORE INTO article
                   (url_hash, url, title, title_norm, source, text,
-                   surfaced, published, fetched_at, extracted_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   surfaced, published, fetched_at, extracted_at, image)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     h, url, title, norm_title(title), source, text,
                     surfaced, published,
                     now,
                     now if text is not None else None,
+                    image,
                 ),
             )
             # Back-fill date fields on rows that exist but lack them (re-gather).
@@ -148,6 +152,11 @@ class SqliteStore:
                 self.con.execute(
                     "UPDATE article SET published = ? WHERE url_hash = ? AND published IS NULL",
                     (published, h),
+                )
+            if image:
+                self.con.execute(
+                    "UPDATE article SET image = ? WHERE url_hash = ? AND image IS NULL",
+                    (image, h),
                 )
             self.con.commit()
 
@@ -290,14 +299,15 @@ class SqliteStore:
                     extracted_at  = COALESCE(excluded.extracted_at, extracted_at),
                     summarized_at = COALESCE(excluded.summarized_at, summarized_at),
                     rewritten_at  = COALESCE(excluded.rewritten_at, rewritten_at),
-                    rendered_at   = COALESCE(excluded.rendered_at, rendered_at)
+                    rendered_at   = COALESCE(excluded.rendered_at, rendered_at),
+                    image         = COALESCE(excluded.image, image)
                 """,
                 [
                     (
                         r.id, r.url, r.title, r.title_norm, r.source, r.text,
                         r.body, r.summary, r.surfaced, r.published,
                         r.fetched_at, r.extracted_at, r.summarized_at,
-                        r.rewritten_at, r.rendered_at,
+                        r.rewritten_at, r.rendered_at, r.image,
                     )
                     for r in rows
                 ],
