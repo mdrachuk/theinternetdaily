@@ -102,7 +102,7 @@ async def cmd_gather(
                 # row already exists.
                 await store.insert_raw(
                     it.source, it.url, it.title,
-                    text=None, surfaced=it.surfaced,
+                    text=None, surfaced=it.surfaced, image=it.image,
                 )
                 continue
             todo.append(it)
@@ -115,7 +115,7 @@ async def cmd_gather(
                 _log(f"  [error] extract: {it.title[:60]}: {res}")
                 await store.insert_raw(
                     it.source, it.url, it.title,
-                    text=None, surfaced=it.surfaced,
+                    text=None, surfaced=it.surfaced, image=it.image,
                 )
                 failed_count += 1
                 continue
@@ -123,7 +123,7 @@ async def cmd_gather(
             if art is None:
                 await store.insert_raw(
                     it.source, it.url, it.title,
-                    text=None, surfaced=it.surfaced,
+                    text=None, surfaced=it.surfaced, image=it.image,
                 )
                 failed_count += 1
                 _log(f"  - {it.title[:70]}  (no readable content)")
@@ -135,6 +135,10 @@ async def cmd_gather(
                     text=art.text,
                     surfaced=it.surfaced,
                     published=art.published or it.surfaced,
+                    # The feed's own choice wins: it names the image the
+                    # publisher attached to *this* article, where og:image is
+                    # often a section banner or a site-wide logo.
+                    image=it.image or art.image,
                 )
                 new_count += 1
                 _log(f"  + {it.title[:70]}  ({len(art.text)} chars)")
@@ -341,12 +345,21 @@ async def collect_current_edition(store: Store, sources: list[dict]) -> list[dic
         rows = await store.latest_per_source(name, limit, since_date=since_date)
         for r in rows:
             out.append({
+                "id": r.id,
                 "source": r.source,
+                # Layout hints that live in sources.toml, carried on every
+                # article so the edition builder never needs the config again.
+                "section": src.get("section") or name,
+                # `medium` is read/watch/listen (how you consume it), not
+                # `kind`, which is rss/hn (how we fetch it).
+                "medium": src.get("medium") or "read",
                 "url": r.url,
                 "title": r.title,
                 "text": r.body or r.text,
                 "summary": r.summary,
+                "image": r.image,
                 "date": _format_date(r.published or r.surfaced),
+                "iso_date": r.published or r.surfaced or r.fetched_at[:10],
             })
     return out
 

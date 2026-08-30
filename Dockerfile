@@ -5,7 +5,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 # System packages: a minimal TeX Live (xelatex + fontspec + microtype + multicol
-# + amsmath + needspace + Latin Modern) and poppler for previews. fonts-cmu is
+# + amsmath + needspace + Latin Modern), kept for `tid render` — the site needs
+# none of it, so this layer is the first thing to drop if you never want a
+# PDF and would rather have the ~1.5 GB back. fonts-cmu is
 # Computer Modern Unicode: the same design as Latin Modern but with Cyrillic,
 # without which a Russian-language headline renders as blank space. We no longer
 # ask for Python here: bookworm ships 3.11 and the project needs 3.14, so uv
@@ -17,7 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         texlive-lang-european \
         lmodern \
         fonts-cmu \
-        poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # uv: resolver + installer + Python provisioner, pinned to a release tag.

@@ -8,6 +8,9 @@ xelatex. They cover the four user-visible features added in that issue:
     3. GET /ingest returns a 405 with a helpful JSON hint
     4. POST_INGEST_HOOK fires after a successful ingest
 
+The hook's argument used to be the built PDF. Editions are pages now, so it
+receives the edition snapshot — the same content, as JSON.
+
 The app is driven through httpx.ASGITransport, which does not run the
 lifespan — so importing or exercising the app never starts a scheduler.
 """
@@ -21,6 +24,7 @@ from unittest import mock
 import httpx
 import pytest
 
+import tid.edition as ed
 import tid.jobs as jobs
 import tid.web as web
 
@@ -114,24 +118,32 @@ async def test_healthz(client):
 # --- 4: POST_INGEST_HOOK ---------------------------------------------------
 
 @pytest.fixture
-def hook_env(tmp_path: Path):
-    """A stub PDF plus an executable hook that records its argv."""
-    fake_pdf = tmp_path / "fake.pdf"
-    fake_pdf.write_bytes(b"%PDF-stub")
+def hook_env(tmp_path: Path, monkeypatch):
+    """A cache dir with one snapshot in it, plus a hook that records its argv."""
+    monkeypatch.setenv("TID_CACHE", str(tmp_path))
+    snapshot = tmp_path / "k.json"
+    snapshot.write_text('{"key": "k", "items": []}')
     hook_log = tmp_path / "hook.log"
     hook = tmp_path / "hook.sh"
     hook.write_text(f'#!/usr/bin/env bash\necho "$1" > "{hook_log}"\n')
     hook.chmod(hook.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return fake_pdf, hook, hook_log, tmp_path
+    return snapshot, hook, hook_log, tmp_path
 
 
-def _stubbed_ingest(fake_pdf: Path):
-    """Bypass the real ingest work: no network, no LLM, no PDF build."""
+def _stubbed_ingest():
+    """Bypass the real ingest work: no network, no LLM, no store."""
+    # One article in it, so the edition counts as published and the hook fires.
+    built = ed.build(
+        [{"id": "1", "title": "T", "url": "https://x.test/1", "source": "X",
+          "section": "S", "summary": "d", "text": "body"}],
+        key="k", date="2026-08-30", built_at="2026-08-30T06:00:00+00:00",
+    )
     return (
         mock.patch.object(jobs, "cmd_ingest", new=mock.AsyncMock(return_value=0)),
         mock.patch.object(
-            jobs, "build_pdf_for_key", new=mock.AsyncMock(return_value=fake_pdf)
+            jobs, "build_edition_for_key", new=mock.AsyncMock(return_value=built)
         ),
+        mock.patch.object(jobs, "warm_icons", new=mock.AsyncMock(return_value=0)),
         mock.patch.object(jobs.config, "load_sources", return_value=[]),
         mock.patch.object(jobs, "open_store", return_value=mock.AsyncMock()),
         mock.patch.object(jobs, "current_key", new=mock.AsyncMock(return_value="k")),
@@ -152,30 +164,28 @@ async def test_interval_job_is_actually_scheduled(clean_env):
 
 async def test_ingest_builds_the_edition_without_a_hook(clean_env, hook_env):
     """The archive must gain a row per ingest, visitor or no visitor."""
-    fake_pdf, _, _, _ = hook_env
     os.environ.pop("POST_INGEST_HOOK", None)
 
-    patches = _stubbed_ingest(fake_pdf)
+    patches = _stubbed_ingest()
     for p in patches:
         p.start()
     try:
         await jobs.ingest()
-        jobs.build_pdf_for_key.assert_awaited()
+        jobs.build_edition_for_key.assert_awaited()
     finally:
         for p in patches:
             p.stop()
 
 
 async def test_failed_build_does_not_break_the_ingest(clean_env, hook_env):
-    fake_pdf, _, _, _ = hook_env
     os.environ.pop("POST_INGEST_HOOK", None)
 
-    patches = _stubbed_ingest(fake_pdf)
+    patches = _stubbed_ingest()
     for p in patches:
         p.start()
     boom = mock.patch.object(
-        jobs, "build_pdf_for_key",
-        new=mock.AsyncMock(side_effect=RuntimeError("xelatex died")),
+        jobs, "build_edition_for_key",
+        new=mock.AsyncMock(side_effect=RuntimeError("the store went away")),
     )
     boom.start()
     try:
@@ -186,11 +196,13 @@ async def test_failed_build_does_not_break_the_ingest(clean_env, hook_env):
             p.stop()
 
 
-async def test_hook_runs_with_pdf_path_after_successful_ingest(clean_env, hook_env):
-    fake_pdf, hook, hook_log, _ = hook_env
+async def test_hook_runs_with_snapshot_path_after_successful_ingest(
+    clean_env, hook_env
+):
+    snapshot, hook, hook_log, _ = hook_env
     os.environ["POST_INGEST_HOOK"] = str(hook)
 
-    patches = _stubbed_ingest(fake_pdf)
+    patches = _stubbed_ingest()
     for p in patches:
         p.start()
     try:
@@ -200,17 +212,17 @@ async def test_hook_runs_with_pdf_path_after_successful_ingest(clean_env, hook_e
             p.stop()
 
     assert hook_log.exists(), "hook script did not run"
-    assert hook_log.read_text().strip() == str(fake_pdf)
+    assert hook_log.read_text().strip() == str(snapshot)
 
 
 async def test_hook_failure_does_not_propagate(clean_env, hook_env):
-    fake_pdf, _, _, tmp_path = hook_env
+    _, _, _, tmp_path = hook_env
     bad_hook = tmp_path / "bad.sh"
     bad_hook.write_text("#!/usr/bin/env bash\nexit 1\n")
     bad_hook.chmod(bad_hook.stat().st_mode | stat.S_IEXEC)
     os.environ["POST_INGEST_HOOK"] = str(bad_hook)
 
-    patches = _stubbed_ingest(fake_pdf)
+    patches = _stubbed_ingest()
     for p in patches:
         p.start()
     try:
@@ -221,10 +233,9 @@ async def test_hook_failure_does_not_propagate(clean_env, hook_env):
 
 
 async def test_no_hook_means_no_subprocess(clean_env, hook_env):
-    fake_pdf, _, _, _ = hook_env
     os.environ.pop("POST_INGEST_HOOK", None)
 
-    patches = _stubbed_ingest(fake_pdf)
+    patches = _stubbed_ingest()
     run_hook = mock.patch.object(jobs, "run_hook", new=mock.AsyncMock())
     for p in patches:
         p.start()

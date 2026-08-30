@@ -1,19 +1,31 @@
 """FastAPI web service for The Internet Daily.
 
+The paper *is* the website. Every article the pipeline gathered, summarized and
+rewrote is laid out as a front page with its continuation below the fold, and
+each one has a page of its own carrying the full rewritten text — no clicking
+through to the source unless you want to.
+
 Routes:
-  GET  /                  index: latest edition + every past edition
-  GET  /digest.pdf        current edition PDF (cached, built on demand)
-  GET  /preview.png       page-1 PNG of the current edition
-  GET  /digest/{key}.pdf  an archived edition by cache key
-  GET  /digest/{key}.png  page-1 PNG of an archived edition
-  GET  /archive.json      the archive as JSON
-  GET  /sources           JSON list of configured sources + counts
-  GET  /healthz       liveness probe
-  GET  /readyz        readiness probe (store + config)
-  POST /ingest        manual kick, via the job queue
+  GET  /                    the current edition
+  GET  /e/{key}             an edition from the archive
+  GET  /e/{key}/a/{id}      one article's full text, in that edition
+  GET  /a/{id}              the same, resolved in the current edition
+  GET  /sources             the subscription list
+  GET  /sources.json        the same, as JSON
+  GET  /archive.json        every edition, as JSON
+  GET  /icon/{domain}.png   a cached source mark
+  GET  /healthz             liveness probe
+  GET  /readyz              readiness probe (store + config)
+  POST /ingest              manual kick, via the job queue
+
+Both edition routes take `?m=read|watch|listen` to show one medium only.
 
 Background:
   APScheduler (AsyncIOScheduler) enqueues `ingest` on a schedule.
+
+PDFs are not built. `tid render` still typesets one from the same store if you
+want a copy for an e-ink reader, but nothing on this service does it, and no
+route serves one.
 
 Configuration is read from the environment per call by `tid.config`;
 the work itself lives in `tid.jobs`, so an arq worker runs exactly the
@@ -24,7 +36,7 @@ Environment:
   TID_STORE   store URL; overrides TID_STATE (e.g. mongodb://…)
   TID_QUEUE   queue URL; unset = in-process (e.g. redis://redis:6379)
   TID_CONFIG  sources.toml path
-  TID_CACHE   cache dir
+  TID_CACHE   cache dir (edition snapshots + cached source marks)
   TID_WORKERS concurrent LLM batches
 
   Scheduling — pick one:
@@ -33,16 +45,14 @@ Environment:
     INGEST_TIMEZONE          IANA tz, used with INGEST_SCHEDULE (default: UTC)
 
   Post-ingest delivery hook:
-    POST_INGEST_HOOK          executable on disk; receives the PDF path as $1
+    POST_INGEST_HOOK          executable on disk; receives the snapshot path as $1
     POST_INGEST_HOOK_TIMEOUT  seconds (default: 300)
 """
 from __future__ import annotations
 
-import html
 import os
 import sys
 from contextlib import asynccontextmanager
-from datetime import date, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, HTTPException
@@ -51,9 +61,12 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
+    RedirectResponse,
+    Response,
 )
 
-from . import archive, config, jobs
+from . import archive, config, edition as ed, icons, jobs, site
+from .http import client_context
 from .queue import open_queue
 from .store import open_store
 
@@ -116,11 +129,17 @@ async def _lifespan(app: FastAPI):
         await app.state.queue.close()
 
 
+def _medium(value: str | None) -> str | None:
+    """Sanitize `?m=`. An unknown value is ignored rather than rejected: a
+    stale bookmark should still show you a newspaper."""
+    return value if value in ed.MEDIA else None
+
+
 def create_app(queue=None) -> FastAPI:
     app = FastAPI(title="The Internet Daily", docs_url=None, redoc_url=None,
                   lifespan=_lifespan)
-    # concurrency=1: the LLM stages and xelatex are the bottleneck, so a second
-    # concurrent ingest would only contend for them.
+    # concurrency=1: the LLM stages are the bottleneck, so a second concurrent
+    # ingest would only contend for them.
     app.state.queue = queue if queue is not None else open_queue(
         config.queue_url(), jobs=jobs.JOBS, concurrency=1
     )
@@ -151,10 +170,58 @@ def create_app(queue=None) -> FastAPI:
             status = 503
         return JSONResponse(checks, status_code=status)
 
+    # --- the paper --------------------------------------------------------
+
     @app.get("/", response_class=HTMLResponse)
-    async def index() -> str:
-        return _render_index(archive.editions(config.cache_dir()),
-                             await _current_key_or_none())
+    async def index(m: str | None = None):
+        return _page(await _current_edition(), _medium(m))
+
+    @app.get("/e/{key}", response_class=HTMLResponse)
+    async def archived(key: str, m: str | None = None):
+        edition = archive.load(config.cache_dir(), key)
+        if edition is None:
+            raise HTTPException(status_code=404, detail="no such edition")
+        return _page(edition, _medium(m))
+
+    @app.get("/a/{article_id}", response_class=HTMLResponse)
+    async def article_current(article_id: str):
+        return _article_page(await _current_edition(), article_id)
+
+    @app.get("/e/{key}/a/{article_id}", response_class=HTMLResponse)
+    async def article_archived(key: str, article_id: str):
+        edition = archive.load(config.cache_dir(), key)
+        if edition is None:
+            raise HTTPException(status_code=404, detail="no such edition")
+        return _article_page(edition, article_id)
+
+    # --- the sources ------------------------------------------------------
+
+    @app.get("/sources", response_class=HTMLResponse)
+    async def sources_page():
+        latest = archive.readable(config.cache_dir())
+        rows = _source_rows(latest[0].sources if latest else {})
+        store = open_store(config.store_url())
+        try:
+            counts, fetched_at = await store.counts(), await store.max_fetched_at()
+        except Exception:
+            counts, fetched_at = dict.fromkeys(
+                ("total", "rendered", "pending_summary", "pending_rewrite"), 0
+            ), ""
+        finally:
+            await store.close()
+        return HTMLResponse(site.render_sources(rows, counts, fetched_at))
+
+    @app.get("/sources.json")
+    async def sources_json():
+        store = open_store(config.store_url())
+        try:
+            return {
+                "sources": _source_rows(),
+                "current_key": await _current_key_or_none(),
+                "max_fetched_at": await store.max_fetched_at(),
+            }
+        finally:
+            await store.close()
 
     @app.get("/archive.json")
     async def archive_json():
@@ -162,82 +229,45 @@ def create_app(queue=None) -> FastAPI:
         return {
             "current": current,
             "editions": [
-                {**vars(e), "url": f"/digest/{e.key}.pdf",
-                 "preview": f"/digest/{e.key}.png",
-                 "is_current": e.key == current}
+                {**vars(e), "url": f"/e/{e.key}", "is_current": e.key == current}
                 for e in archive.editions(config.cache_dir())
             ],
         }
 
-    @app.get("/sources")
-    async def sources_endpoint():
-        sources = config.load_sources()
-        store = open_store(config.store_url())
-        try:
-            return {
-                "sources": [
-                    {"name": s["name"], "kind": s.get("kind"),
-                     "limit": s.get("limit")}
-                    for s in sources
-                ],
-                "max_fetched_at": await store.max_fetched_at(),
-            }
-        finally:
-            await store.close()
+    # --- source marks -----------------------------------------------------
 
-    @app.get("/digest.pdf")
-    async def digest_pdf():
-        pdf = await _current_pdf()
+    @app.get("/icon/{domain}.png")
+    async def icon(domain: str):
+        """A source's favicon, fetched once and then served from disk.
+
+        The reader's browser only ever talks to this origin; the one lookup
+        upstream happens here, usually during ingest before anyone has asked.
+        """
+        cache = config.cache_dir()
+        path = icons.icon_path(cache, domain) if icons.is_domain(domain) else None
+        if path is None:
+            raise HTTPException(status_code=404, detail="not a domain")
+        if not path.exists():
+            try:
+                async with client_context() as client:
+                    await icons.fetch_icon(client, cache, domain)
+            except Exception:
+                pass
+        if not path.exists():
+            return Response(
+                icons.BLANK_PNG, media_type="image/png",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
         return FileResponse(
-            pdf,
-            media_type="application/pdf",
-            filename=f"theinternetdaily-{date.today().isoformat()}.pdf",
-            content_disposition_type="inline",
-            headers={"Cache-Control": "public, max-age=300"},
+            path, media_type="image/png",
+            headers={"Cache-Control": "public, max-age=604800"},
         )
 
-    @app.get("/preview.png")
-    async def preview_png():
-        pdf, key = await _current_pdf(with_key=True)
-        png = await jobs.build_preview_for_key(key, pdf)
-        return FileResponse(
-            png,
-            media_type="image/png",
-            headers={"Cache-Control": "public, max-age=300"},
-        )
-
-    @app.get("/digest/{key}.pdf")
-    async def archived_pdf(key: str):
-        pdf = archive.find(config.cache_dir(), key)
-        if pdf is None:
-            raise HTTPException(status_code=404, detail="no such edition")
-        stamp = _edition_date(config.cache_dir(), key)
-        return FileResponse(
-            pdf,
-            media_type="application/pdf",
-            # Same-day editions differ only by key, so the key goes in the
-            # filename — otherwise two downloads collide in ~/Downloads.
-            filename=f"theinternetdaily-{stamp}-{key[:6]}.pdf",
-            content_disposition_type="inline",
-            # Archived editions are immutable: the key *is* the content hash.
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
-        )
-
-    @app.get("/digest/{key}.png")
-    async def archived_preview(key: str):
-        pdf = archive.find(config.cache_dir(), key)
-        if pdf is None:
-            raise HTTPException(status_code=404, detail="no such edition")
-        png = await jobs.build_preview_for_key(key, pdf)
-        return FileResponse(
-            png,
-            media_type="image/png",
-            headers={"Cache-Control": "public, max-age=31536000, immutable"},
-        )
+    # --- ingest -----------------------------------------------------------
 
     @app.post("/ingest")
     async def trigger_ingest():
-        # Optional manual kick; for cron-style external triggers. It goes
+        # Optional manual kick, for cron-style external triggers. It goes
         # through the queue, so a Redis-backed deployment runs it on a worker
         # instead of in the web process — same call either way.
         if jobs.ingest_running():
@@ -257,26 +287,110 @@ def create_app(queue=None) -> FastAPI:
             status_code=405,
         )
 
+    # --- retired ----------------------------------------------------------
+
+    @app.get("/digest.pdf")
+    @app.get("/preview.png")
+    @app.get("/digest/{rest:path}")
+    async def retired_pdf_routes(rest: str = ""):
+        """The PDF era, answered honestly rather than with a 404.
+
+        Anything bookmarked here wanted an edition, and an edition is what the
+        site still has — as a page.
+        """
+        return RedirectResponse("/", status_code=301)
+
     return app
 
 
-async def _current_pdf(with_key: bool = False):
-    """Resolve (and build if needed) the PDF for the current edition."""
+# --- helpers --------------------------------------------------------------
+
+def _page(edition: ed.Edition, medium: str | None) -> HTMLResponse:
+    """One rendered edition, with its neighbours wired into the day nav."""
+    rows = archive.readable(config.cache_dir())
+    keys = [e.key for e in rows]           # newest first
+    prev = next_ = None
+    if edition.key in keys:
+        i = keys.index(edition.key)
+        if i + 1 < len(rows):
+            prev = _step(rows[i + 1], medium)
+        if i > 0:
+            next_ = _step(rows[i - 1], medium)
+    elif rows:
+        # The current edition is assembled but not yet snapshotted (it is
+        # empty). The archive's newest is still the way back.
+        prev = _step(rows[0], medium)
+    return HTMLResponse(site.render_edition(
+        ed.filtered(edition, medium),
+        prev=prev, next=next_, medium=medium, base=_base(edition, keys),
+    ))
+
+
+def _base(edition: ed.Edition, keys: list[str]) -> str:
+    """This edition's own URL. An edition with nothing in it was never
+    snapshotted, so `/e/{key}` would 404 — only `/` can show it."""
+    return f"/e/{edition.key}" if edition.key in keys else "/"
+
+
+def _step(row: archive.Edition, medium: str | None) -> dict:
+    href = f"/e/{row.key}" + (f"?m={medium}" if medium else "")
+    return {"href": href, "label": site.short_date(row.date)}
+
+
+def _article_page(edition: ed.Edition, article_id: str) -> HTMLResponse:
+    item = edition.find(article_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="no such article")
+    keys = [e.key for e in archive.readable(config.cache_dir())]
+    return HTMLResponse(
+        site.render_article(item, edition.key, _base(edition, keys))
+    )
+
+
+def _source_rows(in_edition: dict[str, int] | None = None) -> list[dict]:
+    """sources.toml, in the shape the subscriptions page and its JSON want.
+
+    `in_edition` is the latest edition's per-source article count, which is the
+    only honest answer to "how much does this feed actually give me" that does
+    not need a second pass over the store.
+    """
+    counts = in_edition or {}
+    rows = []
+    for s in config.load_sources():
+        name = s.get("name", "?")
+        url = s.get("url", "")
+        hours = s.get("since_hours")
+        rows.append({
+            "name": name,
+            "kind": s.get("kind"),
+            "url": url,
+            "section": s.get("section") or name,
+            "medium": s.get("medium") or "read",
+            "limit": s.get("limit", 10),
+            "window": f"last {hours}h" if hours else "",
+            "rate": (f"{counts[name]} in the latest edition"
+                     if counts.get(name) else ""),
+            "icon": icons.icon_url(url),
+        })
+    return rows
+
+
+async def _current_edition() -> ed.Edition:
+    """The edition for right now, assembling and snapshotting it if needed."""
     sources = config.load_sources()
     store = open_store(config.store_url())
     try:
         key = await jobs.current_key(store, sources)
-        pdf = await jobs.build_pdf_for_key(key, store, sources)
+        return await jobs.build_edition_for_key(key, store, sources)
     finally:
         await store.close()
-    return (pdf, key) if with_key else pdf
 
 
 async def _current_key_or_none() -> str | None:
-    """The key the current edition *would* have, without building anything.
+    """The key the current edition *would* have, without assembling anything.
 
-    The index must render even when the store is unreachable — a broken badge
-    is a better page than a 500 — so failures collapse to None.
+    archive.json must answer even when the store is unreachable — a missing
+    `current` is a better response than a 500 — so failures collapse to None.
     """
     try:
         sources = config.load_sources()
@@ -287,154 +401,6 @@ async def _current_key_or_none() -> str | None:
             await store.close()
     except Exception:
         return None
-
-
-def _edition_date(cache_dir, key: str) -> str:
-    for e in archive.editions(cache_dir):
-        if e.key == key:
-            return e.date
-    return date.today().isoformat()
-
-
-def _human_date(iso: str) -> str:
-    try:
-        return datetime.fromisoformat(iso).strftime("%A %-d %B %Y")
-    except ValueError:
-        return iso or "unknown date"
-
-
-def _human_time(iso: str) -> str:
-    try:
-        return datetime.fromisoformat(iso).strftime("%H:%M UTC")
-    except ValueError:
-        return ""
-
-
-def _human_size(n: int) -> str:
-    return f"{n / 1_048_576:.1f} MB" if n >= 1_048_576 else f"{n / 1024:.0f} KB"
-
-
-def _describe(e) -> str:
-    """The one-line summary under an edition: article count and sources."""
-    if e.articles is None:
-        return "archived edition"
-    bits = [f"{e.articles} article" + ("" if e.articles == 1 else "s")]
-    if e.sources:
-        named = ", ".join(f"{html.escape(k)} {v}" for k, v in
-                          list(e.sources.items())[:4])
-        extra = len(e.sources) - 4
-        bits.append(named + (f", +{extra} more" if extra > 0 else ""))
-    return " · ".join(bits)
-
-
-_STYLE = """
-    :root { color-scheme: light dark; }
-    body { font-family: Georgia, "Times New Roman", serif; max-width: 760px;
-           margin: 4rem auto; padding: 0 1.25rem; color: #222; }
-    h1   { font-size: 2.4rem; margin: 0 0 0.2rem; letter-spacing: -0.01em; }
-    h2   { font-size: 1.1rem; text-transform: uppercase; letter-spacing: 0.08em;
-           color: #777; font-weight: normal; margin: 3.5rem 0 0.5rem;
-           border-bottom: 1px solid #e5e5e5; padding-bottom: 0.5rem; }
-    .sub { color: #777; margin: 0 0 2.5rem; font-size: 1rem; }
-    a.cta { display: inline-block; padding: 0.7rem 1.4rem; border: 1px solid #222;
-            text-decoration: none; color: #222; font-weight: bold; }
-    a.cta:hover { background: #222; color: #fff; }
-    img.cover { width: 100%; height: auto; border: 1px solid #eee;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
-    .latest { margin-bottom: 1.2rem; }
-    .when { font-size: 1.3rem; margin: 0 0 0.2rem; }
-    .facts { color: #888; font-size: 0.9rem; margin: 0 0 1rem; }
-    ul.editions { list-style: none; padding: 0; margin: 0; }
-    ul.editions li { display: flex; justify-content: space-between;
-                     align-items: baseline; gap: 1rem; padding: 0.7rem 0;
-                     border-bottom: 1px solid #f0f0f0; }
-    ul.editions a { color: #222; text-decoration: none;
-                    border-bottom: 1px solid #bbb; }
-    ul.editions a:hover { border-bottom-color: #222; }
-    .row-meta { color: #999; font-size: 0.85rem; text-align: right;
-                white-space: nowrap; }
-    .badge { display: inline-block; font-size: 0.7rem; text-transform: uppercase;
-             letter-spacing: 0.08em; border: 1px solid #bbb; color: #777;
-             padding: 0.05rem 0.4rem; margin-left: 0.5rem; vertical-align: 0.15em; }
-    .empty { color: #888; font-style: italic; }
-    .meta { color: #999; font-size: 0.85rem; margin-top: 3.5rem;
-            border-top: 1px solid #eee; padding-top: 1rem; }
-    .meta a { color: #999; }
-    @media (prefers-color-scheme: dark) {
-      body { color: #ddd; background: #141414; }
-      h2 { color: #888; border-bottom-color: #2a2a2a; }
-      a.cta { color: #ddd; border-color: #ddd; }
-      a.cta:hover { background: #ddd; color: #141414; }
-      ul.editions li { border-bottom-color: #262626; }
-      ul.editions a { color: #ddd; border-bottom-color: #555; }
-      ul.editions a:hover { border-bottom-color: #ddd; }
-      img.cover { border-color: #2a2a2a; }
-      .meta { border-top-color: #262626; }
-    }
-"""
-
-
-def _render_index(editions: list, current_key: str | None) -> str:
-    """The whole site index: today's edition on top, everything else below."""
-    if editions:
-        latest = editions[0]
-        # /digest.pdf builds on demand, so when new content has landed but no
-        # PDF exists for it yet, that link is what triggers the build.
-        stale = current_key is not None and current_key != latest.key
-        cover = f"/digest/{latest.key}.png"
-        href = f"/digest/{latest.key}.pdf"
-        hero = f"""  <div class="latest">
-    <p class="when">{html.escape(_human_date(latest.date))}</p>
-    <p class="facts">Built {html.escape(_human_time(latest.built_at))} ·
-       {_describe(latest)} · {_human_size(latest.size)}</p>
-    <a href="{href}"><img class="cover" src="{cover}" alt="Cover of the latest edition"></a>
-  </div>
-  <p><a class="cta" href="{href}">Read this edition (PDF)</a></p>"""
-        if stale:
-            hero += ('\n  <p class="facts">Newer articles have arrived since. '
-                     '<a href="/digest.pdf">Build the current edition</a> '
-                     '(takes a minute or two).</p>')
-    else:
-        hero = """  <p class="empty">No editions have been built yet.</p>
-  <p><a class="cta" href="/digest.pdf">Build the first edition (PDF)</a></p>
-  <p class="facts">The first build takes a minute or two.</p>"""
-
-    rows = []
-    for e in editions[1:]:
-        badge = ('<span class="badge">current</span>'
-                 if e.key == current_key else "")
-        rows.append(
-            f'    <li><span><a href="/digest/{e.key}.pdf">'
-            f"{html.escape(_human_date(e.date))}</a>{badge}<br>"
-            f'<span class="row-meta">{_describe(e)}</span></span>'
-            f'<span class="row-meta">{html.escape(_human_time(e.built_at))}<br>'
-            f"{_human_size(e.size)}</span></li>"
-        )
-    previous = (
-        "  <h2>Previous editions</h2>\n  <ul class=\"editions\">\n"
-        + "\n".join(rows) + "\n  </ul>"
-    ) if rows else ""
-
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>The Internet Daily</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>{_STYLE}</style>
-</head>
-<body>
-  <h1>The Internet Daily</h1>
-  <p class="sub">A curated PDF you read on your reMarkable, not in a browser.</p>
-{hero}
-{previous}
-  <p class="meta">Rebuilt automatically every few hours ·
-     <a href="/digest.pdf">latest</a> ·
-     <a href="/archive.json">archive.json</a> ·
-     <a href="/sources">sources</a></p>
-</body>
-</html>
-"""
 
 
 # ASGI entry point: `uvicorn tid.web:app`

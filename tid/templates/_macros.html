@@ -1,0 +1,41 @@
+{# Byline: source mark, medium glyph, source name, reading time. The glyph is
+   inline SVG from tid.icons, so `read` items simply get nothing. #}
+{% macro byline(item, top=False) -%}
+<div class="byline{% if top %} top{% endif %}">
+  {%- if item.url|icon %}<img src="{{ item.url|icon }}" alt="" width="13" height="13" loading="lazy">{% endif -%}
+  {{ item.medium|glyph }}
+  <span>{{ item.source }}{% if item.meta %} · {{ item.meta }}{% endif %}</span>
+</div>
+{%- endmacro %}
+
+{# One headline. `dek` decides whether the summary is printed under it; it
+   travels in a data attribute either way, because the preview drawer shows it
+   for every item and reads it out of the DOM rather than over the network. #}
+{% macro headline(item, edition_key, cls="", tag="h3", dek=False, top=False, actions=False) -%}
+<article class="hl {{ cls }}"
+         data-source="{{ item.source }}"
+         data-url="{{ item.url }}"
+         data-read="{{ item|read_url(edition_key) }}"
+         data-dek="{{ item.dek }}"
+         data-image="{{ item.image or '' }}"
+         data-excerpt="{{ item.body|excerpt }}">
+  <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
+    {%- if top %}{{ byline(item, top=True) }}{% endif %}
+    <{{ tag }} class="hlt">{{ item.title }}</{{ tag }}>
+    {%- if dek and item.dek %}<p class="dek">{{ item.dek }}</p>{% endif %}
+    {%- if not top %}{{ byline(item) }}{% endif %}
+  </a>
+  {%- if actions %}
+  <div class="lead-actions">
+    <a class="btn" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Open at source ↗</a>
+    <button class="btn quiet pv-open" type="button">Preview</button>
+  </div>
+  {%- else %}
+  <button class="pv pv-open" type="button">Preview</button>
+  {%- endif %}
+</article>
+{%- endmacro %}
+
+{% macro photo(src, alt="") -%}
+<img class="photo" src="{{ src }}" alt="{{ alt }}" loading="lazy" referrerpolicy="no-referrer">
+{%- endmacro %}

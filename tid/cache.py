@@ -1,10 +1,11 @@
-"""On-disk cache for the current edition's PDF + cover preview.
+"""The edition key: "which edition is this?", as a hash.
 
 The current edition is determined by:
   - the high-water mark of new content (max fetched_at in the store)
   - the sources config (sources.toml hashed)
 
-When either changes, the cache key changes and a rebuild is triggered.
+When either changes, the key changes and the next request assembles — and
+snapshots (see `tid.archive`) — a new edition.
 """
 from __future__ import annotations
 
@@ -25,6 +26,13 @@ def _source_fields(s: dict) -> dict:
     # that don't use it keep the keys their cached PDFs were built under.
     if s.get("since_hours") is not None:
         fields["since_hours"] = s["since_hours"]
+    # `section` and `medium` change the edition's *shape* rather than its
+    # contents, but a reader who re-files a source into another column expects
+    # to see that without waiting for the next ingest. Included only when set,
+    # for the same upgrade reason as since_hours above.
+    for optional in ("section", "medium"):
+        if s.get(optional) is not None:
+            fields[optional] = s[optional]
     return fields
 
 
@@ -39,14 +47,6 @@ def edition_key(content_token: str, sources_config: list[dict]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:24]
-
-
-def pdf_path(cache_dir: Path, key: str) -> Path:
-    return cache_dir / f"{key}.pdf"
-
-
-def preview_path(cache_dir: Path, key: str) -> Path:
-    return cache_dir / f"{key}.png"
 
 
 def ensure_dir(cache_dir: Path) -> Path:

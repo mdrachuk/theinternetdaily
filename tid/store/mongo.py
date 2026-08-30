@@ -21,7 +21,7 @@ from .base import ArticleRow, norm_title, now_iso, url_hash
 _FIELDS = (
     "url", "title", "title_norm", "source", "text", "body", "summary",
     "surfaced", "published", "fetched_at", "extracted_at", "summarized_at",
-    "rewritten_at", "rendered_at",
+    "rewritten_at", "rendered_at", "image",
 )
 
 
@@ -53,6 +53,7 @@ def _from_doc(doc: dict[str, Any]) -> ArticleRow:
         summarized_at=doc.get("summarized_at"),
         rewritten_at=doc.get("rewritten_at"),
         rendered_at=doc.get("rendered_at"),
+        image=doc.get("image"),
     )
 
 
@@ -118,12 +119,13 @@ class MongoStore:
         text: str | None,
         surfaced: str | None = None,
         published: str | None = None,
+        image: str | None = None,
     ) -> None:
         await self.ensure_indexes()
         now = now_iso()
         row = ArticleRow(
             id=url_hash(url), url=url, title=title, source=source,
-            text=text, surfaced=surfaced, published=published,
+            text=text, surfaced=surfaced, published=published, image=image,
             fetched_at=now, extracted_at=now if text is not None else None,
         )
         doc = _to_doc(row)
@@ -138,12 +140,14 @@ class MongoStore:
             backfill["surfaced"] = surfaced
         if published:
             backfill["published"] = published
+        if image:
+            backfill["image"] = image
         for field, value in backfill.items():
             await self.col.update_one(
                 {"_id": _id, "$or": [{field: None}, {field: {"$exists": False}}]},
                 {"$set": {field: value}},
             )
-        if backfill:
+        if surfaced or published:
             await self._refresh_dates(_id)
 
     async def _refresh_dates(self, _id: str) -> None:
