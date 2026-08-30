@@ -202,7 +202,8 @@ class SqliteStore:
         def _q() -> list[ArticleRow]:
             cur = self.con.execute(
                 f"{_SELECT} WHERE rendered_at IS NULL "
-                "AND summary IS NOT NULL AND text IS NOT NULL"
+                "AND summary IS NOT NULL AND text IS NOT NULL "
+                "AND body IS NOT NULL"
             )
             return [_row(r) for r in cur.fetchall()]
 
@@ -211,8 +212,15 @@ class SqliteStore:
     async def unpublished(
         self, source: str, floor: str | None = None
     ) -> list[ArticleRow]:
-        """Every ready (text + summary) article for `source` that no edition
-        has carried yet, newest first by best available date.
+        """Every finished article for `source` that no edition has carried
+        yet, newest first by best available date.
+
+        Finished means rewritten, not merely summarized. The paper's whole
+        premise is the cleaned-up, translated body rather than whatever
+        trafilatura scraped, and publishing marks an article done — so going
+        out early with raw text is not "a bit rough this edition", it is that
+        article's only appearance. A rewrite still in the queue simply waits
+        for the next paper.
 
         Publication state is per-article — `rendered_at`, stamped when an
         edition snapshots the article — and not a timestamp comparison. That
@@ -234,6 +242,7 @@ class SqliteStore:
                  WHERE source = ?1
                    AND text        IS NOT NULL
                    AND summary     IS NOT NULL
+                   AND body        IS NOT NULL
                    AND rendered_at IS NULL
                    AND (?2 IS NULL OR fetched_at > ?2)
                  ORDER BY COALESCE(published, surfaced, fetched_at) DESC
@@ -261,6 +270,7 @@ class SqliteStore:
                  WHERE rendered_at IS NULL
                    AND text     IS NOT NULL
                    AND summary  IS NOT NULL
+                   AND body     IS NOT NULL
                    AND fetched_at <= ?
                 """,
                 (date, cutoff),
@@ -300,7 +310,7 @@ class SqliteStore:
                 "unreadable":       c("SELECT COUNT(*) FROM article WHERE text IS NULL").fetchone()[0],
                 "pending_summary":  c("SELECT COUNT(*) FROM article WHERE summary IS NULL AND text IS NOT NULL").fetchone()[0],
                 "pending_rewrite":  c("SELECT COUNT(*) FROM article WHERE body    IS NULL AND text IS NOT NULL").fetchone()[0],
-                "pending_render":   c("SELECT COUNT(*) FROM article WHERE rendered_at IS NULL AND summary IS NOT NULL AND text IS NOT NULL").fetchone()[0],
+                "pending_render":   c("SELECT COUNT(*) FROM article WHERE rendered_at IS NULL AND summary IS NOT NULL AND text IS NOT NULL AND body IS NOT NULL").fetchone()[0],
                 "rendered":         c("SELECT COUNT(*) FROM article WHERE rendered_at IS NOT NULL").fetchone()[0],
             }
 

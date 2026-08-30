@@ -141,6 +141,9 @@ async def _add(store, title, published=None, surfaced=None, ready=True):
     )
     if ready:
         await store.set_summary(url_hash(url), "a summary")
+        # Ready means finished, not merely summarized: an edition will not
+        # carry an article whose rewrite is still in the queue.
+        await store.set_body(url_hash(url), "a rewritten body")
 
 
 async def _titles(store, **kwargs):

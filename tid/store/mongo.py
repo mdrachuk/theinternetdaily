@@ -191,21 +191,24 @@ class MongoStore:
     async def pending_render(self) -> list[ArticleRow]:
         await self.ensure_indexes()
         cursor = self.col.find(
-            {"rendered_at": None, "summary": {"$ne": None}, "text": {"$ne": None}}
+            {"rendered_at": None, "summary": {"$ne": None},
+             "text": {"$ne": None}, "body": {"$ne": None}}
         )
         return [_from_doc(d) async for d in cursor]
 
     async def unpublished(
         self, source: str, floor: str | None = None
     ) -> list[ArticleRow]:
-        """Every ready article for `source` no edition has carried yet. See
-        the SQLite store for why publication state is per-article rather than
-        a timestamp comparison."""
+        """Every finished — rewritten, not merely summarized — article for
+        `source` that no edition has carried yet. See the SQLite store for why
+        publication state is per-article rather than a timestamp comparison,
+        and why a pending rewrite waits for the next paper."""
         await self.ensure_indexes()
         query: dict[str, Any] = {
             "source": source,
             "text": {"$ne": None},
             "summary": {"$ne": None},
+            "body": {"$ne": None},
             "rendered_at": None,
         }
         if floor is not None:
@@ -222,6 +225,7 @@ class MongoStore:
                 "rendered_at": None,
                 "text": {"$ne": None},
                 "summary": {"$ne": None},
+                "body": {"$ne": None},
                 "fetched_at": {"$lte": cutoff},
             },
             {"$set": {"rendered_at": date}},
@@ -256,7 +260,7 @@ class MongoStore:
                 {"body": None, "text": {"$ne": None}}
             ),
             "pending_render": await self.col.count_documents(
-                {"rendered_at": None, **ready}
+                {"rendered_at": None, "body": {"$ne": None}, **ready}
             ),
             "rendered": await self.col.count_documents(
                 {"rendered_at": {"$ne": None}}

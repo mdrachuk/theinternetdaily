@@ -77,7 +77,7 @@ async def test_image_is_stored_and_backfilled_on_a_regather(store):
     """A feed that only starts advertising an image later must still get it
     onto the row it already wrote — that is how an existing install picks
     images up without re-extracting everything."""
-    await _add(store, "pic", summary="s")
+    await _add(store, "pic", summary="s", body="b")
     (row,) = await store.unpublished("Src")
     assert row.image is None
 
@@ -96,7 +96,7 @@ async def test_image_is_stored_and_backfilled_on_a_regather(store):
 async def test_pending_summary_excludes_unreadable_and_done(store):
     await _add(store, "ready")
     await _add(store, "unreadable", text=None)
-    await _add(store, "already", summary="s")
+    await _add(store, "already", summary="s", body="b")
     titles = {r.title for r in await store.pending_summary()}
     assert titles == {"ready"}
 
@@ -122,7 +122,7 @@ async def test_set_summary_and_body_stamp_their_timestamps(store):
 async def test_unpublished_is_newest_first_and_uncapped(store):
     """No per-source cap: four stories in, four stories out."""
     for i in range(1, 5):
-        await _add(store, f"a{i}", published=f"2030-01-0{i}", summary="s")
+        await _add(store, f"a{i}", published=f"2030-01-0{i}", summary="s", body="b")
     rows = await store.unpublished("Src")
     assert [r.title for r in rows] == ["a4", "a3", "a2", "a1"]
 
@@ -134,15 +134,24 @@ async def test_unpublished_needs_text_and_summary(store):
 
 
 async def test_unpublished_scopes_to_one_source(store):
-    await _add(store, "mine", summary="s", source="Src")
-    await _add(store, "theirs", summary="s", source="Other")
+    await _add(store, "mine", summary="s", body="b", source="Src")
+    await _add(store, "theirs", summary="s", body="b", source="Other")
     rows = await store.unpublished("Src")
     assert [r.title for r in rows] == ["mine"]
 
 
+async def test_unpublished_waits_for_the_rewrite(store):
+    """Summarized is not finished. The paper's premise is the rewritten body,
+    and publishing marks an article done — so going out with raw scraped text
+    would be that article's only appearance, not a rough first draft."""
+    await _add(store, "summarized-only", summary="s")
+    await _add(store, "finished", summary="s", body="b")
+    assert [r.title for r in await store.unpublished("Src")] == ["finished"]
+
+
 async def test_unpublished_drops_what_an_edition_already_carried(store):
-    aid = await _add(store, "published", summary="s")
-    await _add(store, "still-new", summary="s")
+    aid = await _add(store, "published", summary="s", body="b")
+    await _add(store, "still-new", summary="s", body="b")
     await store.mark_rendered([aid], "2026-01-01")
     assert [r.title for r in await store.unpublished("Src")] == ["still-new"]
 
@@ -155,20 +164,23 @@ async def test_a_straggler_from_a_published_gather_still_runs(store):
     drop it forever, because it shares its second with articles that made it.
     """
     same_second = "2026-01-01T06:00:00+00:00"
-    carried = await _add(store, "carried", summary="s", fetched_at=same_second)
+    carried = await _add(store, "carried", summary="s", body="b",
+                          fetched_at=same_second)
     await _add(store, "still-rewriting", fetched_at=same_second)  # no summary
     await store.mark_rendered([carried], "2026-01-01")
     assert await store.unpublished("Src") == []
 
     # It finishes, and the next edition picks it up.
-    await store.set_summary(url_hash("http://example.invalid/still-rewriting"), "s")
+    straggler = url_hash("http://example.invalid/still-rewriting")
+    await store.set_summary(straggler, "s")
+    await store.set_body(straggler, "b")
     assert [r.title for r in await store.unpublished("Src")] == ["still-rewriting"]
 
 
 async def test_floor_bounds_an_unpublished_query(store):
-    await _add(store, "ancient", summary="s",
+    await _add(store, "ancient", summary="s", body="b",
                fetched_at="2020-01-01T00:00:00+00:00")
-    await _add(store, "recent", summary="s",
+    await _add(store, "recent", summary="s", body="b",
                fetched_at="2030-01-01T00:00:00+00:00")
     titles = [
         r.title for r in await store.unpublished("Src", "2025-01-01T00:00:00+00:00")
@@ -179,9 +191,9 @@ async def test_floor_bounds_an_unpublished_query(store):
 async def test_retire_before_publishes_the_backlog_without_carrying_it(store):
     """Retiring is what stops a floored first edition from deferring the
     backlog to the second one rather than excluding it."""
-    await _add(store, "ancient", summary="s",
+    await _add(store, "ancient", summary="s", body="b",
                fetched_at="2020-01-01T00:00:00+00:00")
-    await _add(store, "recent", summary="s",
+    await _add(store, "recent", summary="s", body="b",
                fetched_at="2030-01-01T00:00:00+00:00")
     await _add(store, "not-ready", fetched_at="2020-01-01T00:00:00+00:00")
 
@@ -189,8 +201,11 @@ async def test_retire_before_publishes_the_backlog_without_carrying_it(store):
     assert n == 1
     # The old one is out of the running; the recent one is untouched...
     assert [r.title for r in await store.unpublished("Src")] == ["recent"]
-    # ...and the unready one was left alone, so it still runs once it is ready.
-    await store.set_summary(url_hash("http://example.invalid/not-ready"), "s")
+    # ...and the unready one was left alone, so it still runs once it is
+    # finished, however far outside the window it was gathered.
+    unready = url_hash("http://example.invalid/not-ready")
+    await store.set_summary(unready, "s")
+    await store.set_body(unready, "b")
     assert sorted(r.title for r in await store.unpublished("Src")) == [
         "not-ready", "recent",
     ]
@@ -207,7 +222,7 @@ async def test_sort_date_falls_back_through_published_surfaced_fetched(store):
 
 
 async def test_mark_rendered_moves_rows_out_of_pending_render(store):
-    aid = await _add(store, "rendered-soon", summary="s")
+    aid = await _add(store, "rendered-soon", summary="s", body="b")
     assert [r.id for r in await store.pending_render()] == [aid]
     await store.mark_rendered([aid], "2026-01-01")
     assert await store.pending_render() == []
@@ -226,7 +241,8 @@ async def test_counts_reports_every_stage(store):
     assert c["unreadable"] == 1
     assert c["pending_summary"] == 1          # "raw"
     assert c["pending_rewrite"] == 2          # "raw", "summarized"
-    assert c["pending_render"] == 2           # "summarized", "full"
+    # Only "full": an article still awaiting its rewrite is not publishable.
+    assert c["pending_render"] == 1
     assert c["rendered"] == 0
 
 

@@ -518,10 +518,11 @@ Two things bound an edition, and neither is a count:
 - **Publication state, at assemble time.** Every article an edition carries is
   stamped `rendered_at`, and the next edition takes what is still unstamped.
   So an article runs in exactly one edition: the first one published after it
-  becomes *ready*, which is not the same as the first one after it was
-  gathered — rewriting a whole feed through a local model takes longer than
-  one edition's worth of patience, and a story that is still in the queue when
-  the paper goes out simply runs in the next one.
+  is *finished* — summarized **and** rewritten — which is not the same as the
+  first one after it was gathered. Rewriting a whole feed through a local
+  model takes longer than one edition's worth of patience, and a story still
+  in the queue when the paper goes out simply runs in the next one rather than
+  going out with raw scraped text it would never get to replace.
 
 The one exception is an install with no published history at all — a fresh
 setup, or an archive that has been cleared. The store never deletes rows, so
