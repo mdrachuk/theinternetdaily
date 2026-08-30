@@ -377,3 +377,26 @@ def test_the_topic_survives_a_snapshot_and_a_refile():
     assert refiled.lead.section == "Somewhere Else", (
         "the fallback still tracks the config, in case the topic ever goes away"
     )
+
+
+# --- reaching the right store from a one-off run --------------------------
+
+def test_the_cli_defaults_to_the_configured_store_and_config(monkeypatch):
+    """`tid topics` inside the container has to reach the store the web
+    process is serving from. Both are named by the environment there, and a
+    literal default would quietly create an empty state.db in /app instead."""
+    from tid.cli import build_parser, store_url
+
+    monkeypatch.setenv("TID_STATE", "/data/state.db")
+    monkeypatch.setenv("TID_CONFIG", "/app/sources.toml")
+    args = build_parser().parse_args(["topics"])
+    assert str(args.config) == "/app/sources.toml"
+    assert store_url(args) == "/data/state.db"
+
+
+def test_an_explicit_state_still_wins_over_the_environment(monkeypatch):
+    from tid.cli import build_parser, store_url
+
+    monkeypatch.setenv("TID_STATE", "/data/state.db")
+    args = build_parser().parse_args(["--state", "other.db", "topics"])
+    assert store_url(args) == "other.db"
