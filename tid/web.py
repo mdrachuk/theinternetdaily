@@ -366,8 +366,7 @@ def _source_rows(in_edition: dict[str, int] | None = None) -> list[dict]:
             "url": url,
             "section": s.get("section") or name,
             "medium": s.get("medium") or "read",
-            "limit": s.get("limit", 10),
-            "window": f"last {hours}h" if hours else "",
+            "window": f"gathers last {hours}h" if hours else "gathers whole feed",
             "rate": (f"{counts[name]} in the latest edition"
                      if counts.get(name) else ""),
             "icon": icons.icon_url(url),

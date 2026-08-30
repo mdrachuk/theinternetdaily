@@ -208,16 +208,21 @@ class SqliteStore:
 
         return await self._run(_q)
 
-    async def latest_per_source(
-        self, source: str, limit: int, since_date: str | None = None
+    async def ready_since(
+        self, source: str, since: str | None = None
     ) -> list[ArticleRow]:
-        """Most recent `limit` ready (text + summary) articles for source,
-        ordered newest first by best available date.
+        """Every ready (text + summary) article for `source` gathered after
+        `since`, newest first by best available date.
 
-        since_date: ISO date string (YYYY-MM-DD); when set, articles whose
-        best available date is older than this are excluded. Articles with no
-        date at all are always kept. Safe as a string comparison because both
-        `published` (trafilatura) and `surfaced` (feed/HN) are YYYY-MM-DD, so
+        `since` is a `fetched_at` timestamp — when we last published, not when
+        the article was written. That is the difference that makes an edition
+        "everything new since the last sync": a blog post from last week that
+        a feed only surfaced to us this morning is new to the reader, and a
+        date-based window would have thrown it away. None means no boundary,
+        i.e. everything ready in the store.
+
+        Safe as a string comparison: `fetched_at` is always
+        `datetime.now(timezone.utc).isoformat(timespec="seconds")`, so
         lexicographic order is chronological order.
         """
         def _q() -> list[ArticleRow]:
@@ -227,13 +232,10 @@ class SqliteStore:
                  WHERE source = ?1
                    AND text     IS NOT NULL
                    AND summary  IS NOT NULL
-                   AND (?2 IS NULL
-                        OR COALESCE(published, surfaced) IS NULL
-                        OR COALESCE(published, surfaced) >= ?2)
+                   AND (?2 IS NULL OR fetched_at > ?2)
                  ORDER BY COALESCE(published, surfaced, fetched_at) DESC
-                 LIMIT ?3
                 """,
-                (source, since_date, limit),
+                (source, since),
             )
             return [_row(r) for r in cur.fetchall()]
 

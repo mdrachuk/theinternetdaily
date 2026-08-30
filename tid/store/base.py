@@ -65,13 +65,6 @@ class ArticleRow:
         COALESCE(published, surfaced, fetched_at)."""
         return self.published or self.surfaced or self.fetched_at
 
-    @property
-    def age_date(self) -> str | None:
-        """Date used for `since_date` window filtering: the article's own date
-        if known, else the date the source surfaced it. None means undated,
-        which every backend treats as 'always keep'."""
-        return self.published or self.surfaced
-
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -122,8 +115,8 @@ class Store(Protocol):
     # --- render ---------------------------------------------------------
     async def pending_render(self) -> list[ArticleRow]: ...
 
-    async def latest_per_source(
-        self, source: str, limit: int, since_date: str | None = None
+    async def ready_since(
+        self, source: str, since: str | None = None
     ) -> list[ArticleRow]: ...
 
     async def mark_rendered(self, article_ids: list[str], date: str) -> None: ...

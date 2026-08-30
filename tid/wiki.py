@@ -182,11 +182,10 @@ async def fetch_tech_headlines(
     from .fetch import fetch_rss
 
     # All three feeds at once — they are independent and each is a slow tail.
+    # These are decorations, not articles: `per_feed` below is the real bound,
+    # so the whole feed coming back costs a few list items, not a fetch.
     results = await asyncio.gather(
-        *(
-            fetch_rss(client, name, url, limit=max(per_feed * 3, 6))
-            for name, url in _TECH_FEEDS
-        ),
+        *(fetch_rss(client, name, url) for name, url in _TECH_FEEDS),
         return_exceptions=True,
     )
 

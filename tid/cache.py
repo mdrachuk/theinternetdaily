@@ -19,11 +19,10 @@ def _source_fields(s: dict) -> dict:
     fields = {
         "name": s.get("name"),
         "kind": s.get("kind"),
-        "limit": s.get("limit"),
     }
-    # since_hours changes which stored articles make the edition, so it has
-    # to move the key too — but only include it when actually set, so configs
-    # that don't use it keep the keys their cached PDFs were built under.
+    # since_hours changes how far back a gather reaches, and so which articles
+    # ever enter the store — but only include it when actually set, so configs
+    # that don't use it keep the keys their snapshots were built under.
     if s.get("since_hours") is not None:
         fields["since_hours"] = s["since_hours"]
     # `section` and `medium` change the edition's *shape* rather than its

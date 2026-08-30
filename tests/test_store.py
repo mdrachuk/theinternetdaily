@@ -13,12 +13,22 @@ from tid.store import ArticleRow, SqliteStore, open_store, url_hash
 
 async def _add(store, title, *, text="body text", published=None,
                surfaced=None, source="Src", summary=None, body=None,
-               image=None):
+               image=None, fetched_at=None):
     url = f"http://example.invalid/{title}"
-    await store.insert_raw(
-        source, url, title, text=text, surfaced=surfaced, published=published,
-        image=image,
-    )
+    if fetched_at is not None:
+        # insert_raw stamps fetched_at off the clock. A test about the edition
+        # boundary has to place its rows in time itself, and the bulk-copy
+        # path is the one part of the protocol that lets it.
+        await store.upsert_rows([ArticleRow(
+            id=url_hash(url), url=url, title=title, source=source, text=text,
+            surfaced=surfaced, published=published, image=image,
+            fetched_at=fetched_at,
+        )])
+    else:
+        await store.insert_raw(
+            source, url, title, text=text, surfaced=surfaced,
+            published=published, image=image,
+        )
     if summary is not None:
         await store.set_summary(url_hash(url), summary)
     if body is not None:
@@ -68,16 +78,16 @@ async def test_image_is_stored_and_backfilled_on_a_regather(store):
     onto the row it already wrote — that is how an existing install picks
     images up without re-extracting everything."""
     await _add(store, "pic", summary="s")
-    (row,) = await store.latest_per_source("Src", 5)
+    (row,) = await store.ready_since("Src")
     assert row.image is None
 
     await _add(store, "pic", image="https://cdn.invalid/a.jpg")
-    (row,) = await store.latest_per_source("Src", 5)
+    (row,) = await store.ready_since("Src")
     assert row.image == "https://cdn.invalid/a.jpg"
 
     # ...and a later re-gather must not overwrite it with a different one.
     await _add(store, "pic", image="https://cdn.invalid/b.jpg")
-    (row,) = await store.latest_per_source("Src", 5)
+    (row,) = await store.ready_since("Src")
     assert row.image == "https://cdn.invalid/a.jpg"
 
 
@@ -100,7 +110,7 @@ async def test_pending_rewrite_tracks_body_not_summary(store):
 
 async def test_set_summary_and_body_stamp_their_timestamps(store):
     aid = await _add(store, "stamped", summary="a summary", body="a body")
-    rows = await store.latest_per_source("Src", 10)
+    rows = await store.ready_since("Src")
     row = next(r for r in rows if r.id == aid)
     assert row.summary == "a summary"
     assert row.body == "a body"
@@ -109,50 +119,65 @@ async def test_set_summary_and_body_stamp_their_timestamps(store):
 
 # --- render ---------------------------------------------------------------
 
-async def test_latest_per_source_is_newest_first_and_limited(store):
+async def test_ready_since_is_newest_first_and_uncapped(store):
+    """No per-source cap: four stories in, four stories out."""
     for i in range(1, 5):
         await _add(store, f"a{i}", published=f"2030-01-0{i}", summary="s")
-    rows = await store.latest_per_source("Src", 2)
-    assert [r.title for r in rows] == ["a4", "a3"]
+    rows = await store.ready_since("Src")
+    assert [r.title for r in rows] == ["a4", "a3", "a2", "a1"]
 
 
-async def test_latest_per_source_needs_text_and_summary(store):
+async def test_ready_since_needs_text_and_summary(store):
     await _add(store, "no-summary", published="2030-01-01")
     await _add(store, "no-text", text=None, published="2030-01-01")
-    assert await store.latest_per_source("Src", 10) == []
+    assert await store.ready_since("Src") == []
 
 
-async def test_latest_per_source_scopes_to_one_source(store):
+async def test_ready_since_scopes_to_one_source(store):
     await _add(store, "mine", summary="s", source="Src")
     await _add(store, "theirs", summary="s", source="Other")
-    rows = await store.latest_per_source("Src", 10)
+    rows = await store.ready_since("Src")
     assert [r.title for r in rows] == ["mine"]
 
 
-async def test_since_date_filters_by_best_available_date(store):
-    await _add(store, "old", published="2020-01-01", summary="s")
-    await _add(store, "new", published="2030-01-01", summary="s")
-    await _add(store, "surfaced-only", surfaced="2029-01-01", summary="s")
-    await _add(store, "undated", summary="s")
-    titles = {
-        r.title for r in await store.latest_per_source(
-            "Src", 10, since_date="2025-01-01"
+async def test_ready_since_cuts_on_gather_time_not_publication_date(store):
+    """The boundary is when we fetched it, not when it was written. A blog
+    post from 2020 that only reached us in this sync is new to the reader."""
+    await _add(store, "seen", summary="s", published="2030-01-01",
+               fetched_at="2026-01-01T00:00:00+00:00")
+    await _add(store, "ancient-but-new", summary="s", published="2020-01-01",
+               fetched_at="2026-01-02T00:00:00+00:00")
+    titles = [
+        r.title for r in await store.ready_since(
+            "Src", "2026-01-01T12:00:00+00:00"
         )
-    }
-    # Undated rows are always kept: no date means we cannot judge.
-    assert titles == {"new", "surfaced-only", "undated"}
+    ]
+    assert titles == ["ancient-but-new"]
+
+
+async def test_ready_since_boundary_is_exclusive(store):
+    """The previous edition's watermark is the newest article it carried, so
+    an article sitting exactly on it has already been published."""
+    await _add(store, "on-the-mark", summary="s",
+               fetched_at="2026-01-01T00:00:00+00:00")
+    assert await store.ready_since("Src", "2026-01-01T00:00:00+00:00") == []
+
+
+async def test_ready_since_none_returns_everything_ready(store):
+    """The first edition has no predecessor to follow."""
+    await _add(store, "a", summary="s", fetched_at="2020-01-01T00:00:00+00:00")
+    await _add(store, "b", summary="s", fetched_at="2030-01-01T00:00:00+00:00")
+    assert len(await store.ready_since("Src")) == 2
 
 
 async def test_sort_date_falls_back_through_published_surfaced_fetched(store):
     row = ArticleRow(id="x", url="u", title="t", source="s",
                      fetched_at="2020-01-01T00:00:00+00:00")
     assert row.sort_date == "2020-01-01T00:00:00+00:00"
-    assert row.age_date is None
     row.surfaced = "2021-01-01"
     assert row.sort_date == "2021-01-01"
     row.published = "2022-01-01"
     assert row.sort_date == "2022-01-01"
-    assert row.age_date == "2022-01-01"
 
 
 async def test_mark_rendered_moves_rows_out_of_pending_render(store):

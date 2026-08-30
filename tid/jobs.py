@@ -50,6 +50,10 @@ async def build_edition_for_key(
 ) -> ed.Edition:
     """Assemble the edition for `key`, snapshotting it on first request.
 
+    The edition starts where the last one stopped: `archive.boundary` reads
+    the previous paper's `fetched_at` watermark off disk, and every article
+    gathered after it — all of them, from every source — goes in.
+
     Cheap — a store read and a JSON write, no LLM and no typesetting — so the
     web process doing this inline on a cache miss costs a reader a moment, not
     a minute. That is the whole reason the PDF build used to need a queue.
@@ -63,14 +67,18 @@ async def build_edition_for_key(
         if existing is not None:
             return existing
         ensure_dir(cache)
-        articles = await collect_current_edition(store, sources)
+        content = await store.max_fetched_at()
+        since = archive.boundary(cache, content)
+        articles = await collect_current_edition(store, sources, since)
         today = date.today().isoformat()
         if not articles:
-            # Nothing to publish yet. Deliberately not snapshotted: an empty
-            # edition would sit in the archive under a key that only moves when
-            # new content lands, i.e. exactly when it stops being empty.
+            # Nothing new since the last paper. Deliberately not snapshotted:
+            # an empty edition would sit in the archive under a key that only
+            # moves when new content lands, i.e. exactly when it stops being
+            # empty — and it would become the boundary the *next* edition
+            # starts from, with no watermark to offer it.
             return ed.build([], key=key, date=today, built_at="")
-        return archive.record(cache, key, today, articles)
+        return archive.record(cache, key, today, articles, content=content)
 
 
 async def warm_icons(edition: ed.Edition) -> int:

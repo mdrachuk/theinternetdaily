@@ -66,14 +66,14 @@ def _entry_image(entry) -> str | None:
 
 
 # Algolia HN search. Returns stories matching the numericFilters, ranked by
-# popularity. We then re-sort by points and truncate to `limit`.
+# popularity. We then re-sort by points; `since_hours` and `min_points` are
+# the only bounds — every story that clears them is a story for the paper.
 _HN_SEARCH = "https://hn.algolia.com/api/v1/search"
 
 
 async def fetch_hn(
     client: httpx.AsyncClient,
     source_name: str = "Hacker News",
-    limit: int = 10,
     since_hours: int = 48,
     min_points: int = 50,
 ) -> list[RawItem]:
@@ -95,7 +95,7 @@ async def fetch_hn(
     hits.sort(key=lambda h: h.get("points", 0), reverse=True)
 
     out: list[RawItem] = []
-    for h in hits[:limit]:
+    for h in hits:
         title = _clean_title(h.get("title"))
         if not title:
             continue
@@ -137,9 +137,12 @@ async def fetch_rss(
     client: httpx.AsyncClient,
     source_name: str,
     feed_url: str,
-    limit: int = 20,
     since_hours: int | None = None,
 ) -> list[RawItem]:
+    """Every entry the feed is currently carrying, oldest bound by
+    `since_hours` if the source sets one. No count cap: what the feed offers
+    is what we take, and `Store.exists` keeps a re-gather from doing the work
+    twice."""
     cutoff = time.time() - since_hours * 3600 if since_hours is not None else None
     r = await client.get(feed_url)
     r.raise_for_status()
@@ -147,7 +150,7 @@ async def fetch_rss(
     # keep its (CPU-bound, sometimes slow) parse off the event loop.
     d = await asyncio.to_thread(feedparser.parse, r.content)
     out: list[RawItem] = []
-    for entry in d.entries[:limit]:
+    for entry in d.entries:
         url = getattr(entry, "link", None)
         title = _clean_title(getattr(entry, "title", None))
         if not url or not title:

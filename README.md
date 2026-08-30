@@ -52,7 +52,7 @@ cp .env.example .env
 $EDITOR .env             # paste ANTHROPIC_API_KEY=sk-ant-... (or set LLM_BACKEND=ollama)
 
 # 3) Pick your sources
-$EDITOR sources.toml     # add/remove RSS/HN entries, set per-source limits
+$EDITOR sources.toml     # add/remove RSS/HN entries, set gather windows
 
 # 4) (Optional) Tweak the look
 $EDITOR tid/templates/style.css
@@ -298,8 +298,8 @@ All non-English source content is translated to English during the rewrite
 step; you can disable that in the prompt if you don't want it.
 
 **The subscriptions page** (`/sources`) — every feed with its section, its
-medium, its limit and how much it contributed to the latest edition. It is a
-view of `sources.toml`, not an editor for it.
+medium, how far back it gathers and how much it contributed to the latest
+edition. It is a view of `sources.toml`, not an editor for it.
 
 **The archive** — every edition ever assembled stays at its own URL, exactly
 as it was published.
@@ -360,11 +360,12 @@ pure and runs per request:
 3. **rewrite** — batches up to 8 articles per LLM call and produces a
    clean, properly-paragraphed, translated-to-English version of each
    article body for the renderer. Preserves code fences and `$math$` exactly.
-4. **assemble** — pulls the latest N articles per source from the store and
-   writes them to a snapshot keyed by a hash of "what's in the store" +
-   "what's in sources.toml". Same content + same config → same snapshot. This
-   is cheap: a store read and a JSON write, no LLM and no typesetting, which
-   is why it happens inline on a cache miss rather than through the queue.
+4. **assemble** — pulls every article gathered since the previous edition's
+   watermark, from every source, and writes them to a snapshot keyed by a
+   hash of "what's in the store" + "what's in sources.toml". Same content +
+   same config → same snapshot. This is cheap: a store read and a JSON write,
+   no LLM and no typesetting, which is why it happens inline on a cache miss
+   rather than through the queue.
 5. **lay out** — `tid/edition.py` turns that flat list into a front page:
    which story leads, which two go beside it, what each column holds, what
    continues below. It is pure and it runs per request, so the layout is
@@ -404,10 +405,15 @@ to `/`.
 
 Every assembled edition writes a snapshot — `archive/cache/{key}.json` — with
 the articles it was built from, bodies included. That is what makes yesterday's
-paper still yesterday's paper: the store keeps moving underneath it (an
-article ages out of a window, a limit changes, a rewrite lands), and without a
-snapshot "the edition of 12 August" would quietly become "whatever the store
-would produce for 12 August today".
+paper still yesterday's paper: the store keeps moving underneath it (a
+source is re-filed, a rewrite lands, a gather brings in fifty more stories),
+and without a snapshot "the edition of 12 August" would quietly become
+"whatever the store would produce for 12 August today".
+
+Each snapshot also records the high-water mark it reached: `watermark`, the
+newest `fetched_at` among the articles it carries. That is where the *next*
+edition starts, which is what makes "everything since the last sync" a fact on
+disk rather than a guess about the clock.
 
 Nothing is ever deleted. An edition stays at `/e/{key}` for as long as its
 file is on disk, and the prev/next arrows in the nav walk the archive
@@ -457,7 +463,6 @@ hardcoded.
 | `kind`         | string | required | must be `"hn"` |
 | `section`      | string | the name | front-page column this files under |
 | `medium`       | string | `"read"` | `read`, `watch` or `listen` |
-| `limit`        | int  | `10`     | how many top stories to keep |
 | `since_hours`  | int  | `48`     | only consider stories submitted in the last N hours |
 | `min_points`   | int  | `50`     | story must have at least this many points to qualify |
 
@@ -465,10 +470,12 @@ hardcoded.
 [[source]]
 name        = "Hacker News"
 kind        = "hn"
-limit       = 10
 since_hours = 48
 min_points  = 100
 ```
+
+Every story clearing `since_hours` and `min_points` is taken. Those two are
+the dial: raise `min_points` for a quieter paper, don't reach for a count.
 
 ### `kind = "rss"` — any Atom/RSS feed
 
@@ -482,8 +489,7 @@ RSS 0.9/1.0/2.0 and Atom 1.0 — every blog and most news sites work.
 | `url`         | string | required | feed URL |
 | `section`     | string | the name | front-page column this files under |
 | `medium`      | string | `"read"` | `read`, `watch` or `listen` |
-| `limit`       | int    | `20`     | take at most N most-recent items |
-| `since_hours` | int    | unset    | skip articles published more than N hours ago (uses the feed's `published`/`updated` date; articles with no date are always kept) |
+| `since_hours` | int    | unset    | don't gather articles published more than N hours ago (uses the feed's `published`/`updated` date; articles with no date are always kept) |
 
 ```toml
 [[source]]
@@ -491,30 +497,38 @@ name        = "Quanta Magazine"
 kind        = "rss"
 section     = "Science & Maths"
 url         = "https://www.quantamagazine.org/feed/"
-limit       = 8
 since_hours = 168   # one week
 ```
 
-### Per-source ordering and limits in practice
+### How big an edition gets
 
-The `limit` is applied **twice**, on purpose:
+There is no per-source cap. Every article a feed has filed since the last sync
+is fetched, rewritten and given its own page, and the front page carries all of
+them — the top of each section above the fold, the rest below it.
 
-- At **fetch** time: gather doesn't pull more than `limit` items from the
-  feed (saves bandwidth and trafilatura time).
-- At **assemble** time: even if the store accumulates more than `limit` items
-  for a source across multiple ingests (it will — items don't get deleted),
-  only the latest `limit` per source make it into a given edition.
+Two things bound an edition, and neither is a count:
 
-So if you want Quanta to have at most 8 articles in the issue, regardless of
-how many they've published this week → set `limit = 8`. If you want Hacker
-News to show only the top 5 by points in the last 24h → set `limit = 5,
-since_hours = 24`.
+- **`since_hours`, at gather time.** How far back into a feed one fetch
+  reaches. It exists so that pointing at an archive feed doesn't walk back
+  through five years on the first run; it is not a way to keep the paper
+  short. Leave it unset and you take whatever the feed is currently carrying.
+- **The previous edition's watermark, at assemble time.** Each snapshot
+  records the newest `fetched_at` it carried, and the next edition starts
+  after it. So an article appears in exactly one edition: the first one
+  published after we gathered it. Nothing repeats, and nothing is skipped —
+  a story that was still awaiting a summary when the last paper went out is
+  simply carried by the next one.
 
-> **On the totals.** Adding up every `limit` in `sources.toml` gives you the
-> maximum article count per edition. Aim for **30–60 articles** for a
-> comfortable 30–60 minute read — that is also about what fills a front page
-> and its continuation without either looking thin. Claude's summaries are dense; volume isn't
-> quality. An empty section on a slow day is cleaner than padding.
+That makes the size of an edition a property of the day rather than of the
+config: a quiet weekend gives you a thin paper, a busy news day a fat one. If
+an edition is consistently longer than you want to read, the fix is fewer
+sources or a stricter `min_points`, not a cap that silently drops stories you
+subscribed to.
+
+> **On the reading time.** **30–60 articles** is a comfortable 30–60 minute
+> read, and about what fills a front page and its continuation without either
+> looking thin. Claude's summaries are dense; volume isn't quality. An empty
+> section on a slow day is cleaner than padding.
 
 ## Scheduling ingests
 

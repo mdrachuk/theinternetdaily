@@ -23,10 +23,12 @@ def cache(tmp_path, monkeypatch):
     return d
 
 
-def _article(n: int, source: str = "Quanta") -> dict:
+def _article(n: int, source: str = "Quanta",
+             fetched_at: str = "2026-08-12T06:00:00+00:00") -> dict:
     return {
         "id": f"{n:016x}",
         "source": source,
+        "fetched_at": fetched_at,
         "section": "Science",
         "medium": "read",
         "url": f"https://quantamagazine.org/story-{n}",
@@ -117,6 +119,54 @@ def test_record_writes_a_readable_snapshot(cache):
     assert [i.title for i in loaded.items] == [i.title for i in built.items]
     # The full body survives the round trip; it is what the article page shows.
     assert loaded.lead.body.startswith("A paragraph of rewritten body.")
+
+
+# --- the watermark: where the next edition starts -------------------------
+
+
+def test_record_stamps_the_newest_gather_time_it_carried(cache):
+    """The watermark is the high tide of *this* edition, so the next one can
+    pick up exactly where it left off."""
+    articles = [
+        _article(0, fetched_at="2026-08-12T06:00:00+00:00"),
+        _article(1, fetched_at="2026-08-12T06:00:09+00:00"),
+    ]
+    archive.record(cache, "a" * 24, "2026-08-12", articles, content="tok-1")
+    (e,) = archive.editions(cache)
+    assert e.watermark == "2026-08-12T06:00:09+00:00"
+    assert e.content == "tok-1"
+
+
+def test_boundary_is_none_for_the_very_first_edition(cache):
+    assert archive.boundary(cache, "tok-1") is None
+
+
+def test_boundary_follows_the_last_edition_from_other_content(cache):
+    archive.record(cache, "a" * 24, "2026-08-12",
+                   [_article(0, fetched_at="2026-08-12T06:00:00+00:00")],
+                   content="tok-1")
+    assert archive.boundary(cache, "tok-2") == "2026-08-12T06:00:00+00:00"
+
+
+def test_boundary_ignores_an_edition_built_from_the_same_content(cache):
+    """Re-filing a source in sources.toml moves the edition key without
+    gathering a thing. The new key must re-lay-out the same articles, not
+    start a window after them and hand the reader a blank paper."""
+    archive.record(cache, "a" * 24, "2026-08-12",
+                   [_article(0, fetched_at="2026-08-12T06:00:00+00:00")],
+                   content="tok-1")
+    assert archive.boundary(cache, "tok-1") is None
+
+
+def test_boundary_falls_back_to_built_at_on_a_snapshot_from_an_older_build(cache):
+    """The upgrade path, exactly as it is on disk: a snapshot with neither a
+    content token nor a watermark, because the build that wrote it had
+    neither. It still pins down a moment, and using it is what stops the first
+    edition after an upgrade from re-publishing the whole store in one go."""
+    _edition(cache, "a" * 24, "2026-08-12", built_at="2026-08-12T06:00:00+00:00")
+    written = json.loads((cache / ("a" * 24 + ".json")).read_text())
+    assert "content" not in written and "watermark" not in written
+    assert archive.boundary(cache, "tok-1") == "2026-08-12T06:00:00+00:00"
 
 
 @pytest.mark.parametrize("key", [

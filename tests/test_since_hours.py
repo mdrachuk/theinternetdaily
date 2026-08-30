@@ -1,11 +1,13 @@
-"""Tests for the per-source `since_hours` age filter (PR #7).
+"""Tests for the per-source `since_hours` age filter.
 
-The filter is applied at two layers, and both are covered here:
-
-    1. gather time  — fetch_rss() drops feed entries older than the window
-    2. render time  — Store.latest_per_source(since_date=...) drops stored
-                      articles older than the window (rows are never deleted,
-                      so without this the edition would accumulate stale ones)
+`since_hours` is a **gather-time** bound and nothing else: it says how far
+back into a feed one fetch reaches. It used to be re-applied at render time
+as well, back when an edition was "the latest N per source" and stale rows
+would otherwise sit in it forever. The edition now starts at the previous
+edition's `fetched_at` watermark, so staleness is handled by construction —
+and re-filtering by publication date would be actively wrong, since a blog
+post written last year that a feed surfaced to us this morning is news to the
+reader. Section 2 pins that down.
 
 Also covers the two things that surround it: the edition cache key has to
 move when since_hours changes, and fetch_hn's Algolia numericFilters have to
@@ -124,11 +126,11 @@ async def test_cutoff_is_utc_not_local_time():
         time.tzset()
 
 
-# --- 2: render-time filtering ---------------------------------------------
+# --- 2: no render-time age filter ------------------------------------------
 #
 # The `store` fixture is parametrized across backends (tests/conftest.py), so
-# the window rule is pinned for SQLite and Mongo alike. Broader store contract
-# tests live in tests/test_store.py.
+# the rule is pinned for SQLite and Mongo alike. Broader store contract tests
+# live in tests/test_store.py.
 
 
 async def _add(store, title, published=None, surfaced=None, ready=True):
@@ -142,83 +144,78 @@ async def _add(store, title, published=None, surfaced=None, ready=True):
 
 
 async def _titles(store, **kwargs):
-    return [r.title for r in await store.latest_per_source("Src", 10, **kwargs)]
+    return [r.title for r in await store.ready_since("Src", **kwargs)]
 
 
-async def test_without_since_date_returns_all_ready_rows(store):
+async def test_publication_date_does_not_bound_the_edition(store):
+    """Both rows were gathered by this run, so both are in this edition —
+    however old the articles themselves are."""
     await _add(store, "old", published="2020-01-01")
     await _add(store, "new", published="2030-01-01")
     assert sorted(await _titles(store)) == ["new", "old"]
 
 
-async def test_since_date_excludes_older_articles(store):
-    await _add(store, "old", published="2020-01-01")
-    await _add(store, "new", published="2030-01-01")
-    assert await _titles(store, since_date="2025-01-01") == ["new"]
+async def test_a_backdated_article_gathered_now_still_makes_the_edition(store):
+    """The case a date window got wrong: an essay published years ago that a
+    feed has only just filed. It is new to the reader, so it runs."""
+    await _add(store, "rediscovered", published="2011-06-01")
+    assert await _titles(store) == ["rediscovered"]
 
 
-async def test_since_date_is_inclusive_of_the_boundary(store):
-    await _add(store, "boundary", published="2025-01-01")
-    assert await _titles(store, since_date="2025-01-01") == ["boundary"]
-
-
-async def test_falls_back_to_surfaced_when_published_is_null(store):
-    await _add(store, "surfaced-only", surfaced="2030-01-01")
-    await _add(store, "stale-surfaced", surfaced="2020-01-01")
-    assert await _titles(store, since_date="2025-01-01") == ["surfaced-only"]
-
-
-async def test_undated_articles_are_kept(store):
-    """Mirrors the gather-time rule so the two layers agree."""
+async def test_undated_articles_are_kept_at_render_time(store):
     await _add(store, "undated")
-    assert await _titles(store, since_date="2025-01-01") == ["undated"]
+    assert await _titles(store) == ["undated"]
 
 
 async def test_unsummarized_rows_are_still_excluded(store):
     await _add(store, "not-ready", published="2030-01-01", ready=False)
-    assert await _titles(store, since_date="2025-01-01") == []
+    assert await _titles(store) == []
 
 
-async def test_limit_still_applies_with_since_date(store):
+async def test_everything_gathered_this_run_is_carried(store):
+    """No cap: five in, five out, newest first."""
     for i in range(5):
         await _add(store, f"a{i}", published=f"2030-01-0{i + 1}")
-    rows = await store.latest_per_source("Src", 2, since_date="2025-01-01")
-    assert len(rows) == 2
-    # newest first
-    assert [r.title for r in rows] == ["a4", "a3"]
+    assert await _titles(store) == ["a4", "a3", "a2", "a1", "a0"]
 
 
 # --- 3: the cache key has to notice since_hours ---------------------------
 
 
 def test_since_hours_changes_the_edition_key():
-    base = [{"name": "Quanta", "kind": "rss", "limit": 8}]
-    windowed = [{"name": "Quanta", "kind": "rss", "limit": 8,
-                 "since_hours": 168}]
+    base = [{"name": "Quanta", "kind": "rss"}]
+    windowed = [{"name": "Quanta", "kind": "rss", "since_hours": 168}]
     assert edition_key("t", base) != edition_key("t", windowed)
 
 
-def test_unset_since_hours_does_not_change_existing_keys():
-    """Adding the field must not invalidate every cached edition on upgrade —
-    a cache miss costs a rebuild plus an LLM call for the cover
-    decorations."""
-    cfg = [{"name": "Quanta", "kind": "rss", "limit": 8}]
-    # The key an existing install's cached PDF was built under.
-    assert edition_key("t", cfg) == "5a80ef1d3afffd2850d2f905"
-    # Explicit None must hash the same as absent.
+def test_unset_since_hours_hashes_the_same_as_absent():
+    """An optional field left out must not hash differently from one set to
+    None — otherwise two configs that mean the same thing split the cache."""
+    cfg = [{"name": "Quanta", "kind": "rss"}]
     assert edition_key("t", cfg) == edition_key(
         "t", [dict(cfg[0], since_hours=None)]
     )
 
 
+def test_a_stale_limit_key_no_longer_binds():
+    """`limit` used to be hashed into the key, because it decided how many
+    articles a source contributed. It decides nothing now, so it is out of the
+    hash — and a config carrying a leftover `limit` must key the same as one
+    without it, rather than quietly minting a second edition."""
+    cfg = [{"name": "Quanta", "kind": "rss"}]
+    assert edition_key("t", cfg) == edition_key(
+        "t", [dict(cfg[0], limit=8)]
+    )
+
+
 def test_differing_since_hours_differ():
-    a = [{"name": "Q", "kind": "rss", "limit": 8, "since_hours": 24}]
-    b = [{"name": "Q", "kind": "rss", "limit": 8, "since_hours": 168}]
+    a = [{"name": "Q", "kind": "rss", "since_hours": 24}]
+    b = [{"name": "Q", "kind": "rss", "since_hours": 168}]
     assert edition_key("t", a) != edition_key("t", b)
 
 
 def test_key_is_stable_for_identical_config():
-    cfg = [{"name": "Q", "kind": "rss", "limit": 8, "since_hours": 24}]
+    cfg = [{"name": "Q", "kind": "rss", "since_hours": 24}]
     assert edition_key("t", cfg) == edition_key("t", list(cfg))
 
 
@@ -238,7 +235,7 @@ async def test_numeric_filters_are_json_encoded_so_both_survive():
         return httpx.Response(200, json={"hits": []})
 
     async with _client(handler) as client:
-        await fetch_hn(client, limit=10, since_hours=48, min_points=50)
+        await fetch_hn(client, since_hours=48, min_points=50)
 
     values = captured["url"].params.get_list("numericFilters")
     assert len(values) == 1, "must be one JSON string, not repeated params"

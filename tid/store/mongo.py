@@ -32,7 +32,6 @@ def _to_doc(row: ArticleRow) -> dict[str, Any]:
     # COALESCE(published, surfaced, fetched_at), and reproducing that in an
     # aggregation on every read would be both slower and harder to index.
     doc["sort_date"] = row.sort_date
-    doc["age_date"] = row.age_date
     return doc
 
 
@@ -148,16 +147,16 @@ class MongoStore:
                 {"$set": {field: value}},
             )
         if surfaced or published:
-            await self._refresh_dates(_id)
+            await self._refresh_sort_date(_id)
 
-    async def _refresh_dates(self, _id: str) -> None:
+    async def _refresh_sort_date(self, _id: str) -> None:
         doc = await self.col.find_one({"_id": _id})
         if doc is None:
             return
         row = _from_doc(doc)
         await self.col.update_one(
             {"_id": _id},
-            {"$set": {"sort_date": row.sort_date, "age_date": row.age_date}},
+            {"$set": {"sort_date": row.sort_date}},
         )
 
     # --- summarize / rewrite --------------------------------------------
@@ -196,24 +195,21 @@ class MongoStore:
         )
         return [_from_doc(d) async for d in cursor]
 
-    async def latest_per_source(
-        self, source: str, limit: int, since_date: str | None = None
+    async def ready_since(
+        self, source: str, since: str | None = None
     ) -> list[ArticleRow]:
+        """Every ready article for `source` gathered after the `fetched_at`
+        boundary `since`. See the SQLite store for why the boundary is a
+        gather timestamp and not a publication date."""
         await self.ensure_indexes()
         query: dict[str, Any] = {
             "source": source,
             "text": {"$ne": None},
             "summary": {"$ne": None},
         }
-        if since_date is not None:
-            # Undated rows are always kept — same rule as the SQLite store and
-            # as the gather-time filter.
-            query["$or"] = [
-                {"age_date": None},
-                {"age_date": {"$exists": False}},
-                {"age_date": {"$gte": since_date}},
-            ]
-        cursor = self.col.find(query).sort("sort_date", -1).limit(limit)
+        if since is not None:
+            query["fetched_at"] = {"$gt": since}
+        cursor = self.col.find(query).sort("sort_date", -1)
         return [_from_doc(d) async for d in cursor]
 
     async def mark_rendered(self, article_ids: list[str], date: str) -> None:

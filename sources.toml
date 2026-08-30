@@ -1,11 +1,18 @@
 # Add, remove, or reorder sources here.
-# kind    = "hn" | "rss"        how the source is fetched (Algolia / feedparser)
-# section = "Science & Maths"   which front-page column the source files under;
-#                               sources sharing a section share a column, and
-#                               the first four sections get the front page.
-# medium  = "read"|"watch"|"listen"   what the reader does with it. Drives the
-#                               glyph in the byline and the Read/Watch/Listen
-#                               filter. Defaults to "read".
+# kind        = "hn" | "rss"    how the source is fetched (Algolia / feedparser)
+# section     = "Science & Maths"   which front-page column the source files
+#                               under; sources sharing a section share a
+#                               column, and the first four sections get the
+#                               front page.
+# medium      = "read"|"watch"|"listen"   what the reader does with it. Drives
+#                               the glyph in the byline and the
+#                               Read/Watch/Listen filter. Defaults to "read".
+# since_hours = 24              how far back into the feed a gather reaches.
+#                               Omit to take whatever the feed is carrying.
+#
+# There is no per-source article cap. Every entry a feed has filed since the
+# last sync is fetched, rewritten and given its own page; the edition is
+# bounded by when the previous one ended, not by a count.
 #
 # Order matters twice over: sections appear in the order their first source
 # does, and within a section the top article is the newest. Quality first,
@@ -21,14 +28,12 @@ name = "Quanta Magazine"
 section = "Science & Maths"
 kind = "rss"
 url = "https://www.quantamagazine.org/feed/"
-limit = 8
 
 [[source]]
 name = "Terence Tao"
 section = "Science & Maths"
 kind = "rss"
 url = "https://terrytao.wordpress.com/feed/"
-limit = 5
 
 # --- ML / AI -------------------------------------------------------------
 
@@ -37,14 +42,12 @@ name = "Lil'Log"
 section = "Machine Learning"
 kind = "rss"
 url = "https://lilianweng.github.io/index.xml"
-limit = 5
 
 [[source]]
 name = "The Gradient"
 section = "Machine Learning"
 kind = "rss"
 url = "https://thegradient.pub/rss/"
-limit = 5
 
 # --- Apple ecosystem -----------------------------------------------------
 
@@ -53,19 +56,16 @@ name = "MacRumors"
 section = "Apple"
 kind = "rss"
 url = "https://feeds.macrumors.com/MacRumors-All"
-limit = 15
 
 # --- News ----------------------------------------------------------------
-# Fast-moving, so each carries a since_hours window: without one, rows already
-# in the store keep reappearing in the edition long after they stop being news
-# (the window is re-applied at render time, not just at gather time).
+# Fast-moving and deep: each carries a since_hours window so a gather takes
+# the day's stories rather than walking back through the whole archive feed.
 
 [[source]]
 name = "The Guardian"
 section = "World"
 kind = "rss"
 url = "https://www.theguardian.com/international/rss"
-limit = 8
 since_hours = 24
 
 [[source]]
@@ -73,7 +73,6 @@ name = "Kyiv Independent"
 section = "World"
 kind = "rss"
 url = "https://kyivindependent.com/news-archive/rss/"
-limit = 8
 since_hours = 24
 
 [[source]]
@@ -84,7 +83,6 @@ kind = "rss"
 # language, so bodies and summaries stay in Russian, like the feed headlines —
 # hence the CMU font fallback in the template for Cyrillic.
 url = "https://meduza.io/rss/all"
-limit = 6
 since_hours = 48
 
 # --- Aggregator (last on purpose; mostly social, occasional gems) --------
@@ -93,7 +91,6 @@ since_hours = 48
 name = "Hacker News"
 section = "Hacker News"
 kind = "hn"
-limit = 10
 since_hours = 48
 min_points = 100
 
@@ -103,4 +100,3 @@ min_points = 100
 # name = "heise"
 # kind = "rss"
 # url = "https://www.heise.de/rss/heise-atom.xml"
-# limit = 15

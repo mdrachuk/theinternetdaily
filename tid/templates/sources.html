@@ -32,7 +32,6 @@
             <div class="line">{{ src.section }} · {{ src.medium }}{% if src.rate %} · {{ src.rate }}{% endif %}</div>
           </div>
           <div class="tags">
-            <span class="tag">up to {{ src.limit }}</span>
             {%- if src.window %}<span class="tag">{{ src.window }}</span>{% endif %}
           </div>
         </div>
@@ -40,6 +39,7 @@
       </div>
 
       <p class="note">Sources live in sources.toml. Add, remove or re-file one there and it lands in the next edition.</p>
+      <p class="note small">No source is capped. Every article a feed has filed since the last sync is gathered, rewritten, and given its own page in the edition.</p>
       <p class="note small">{{ counts.total }} articles stored · {{ counts.rendered }} published · {{ counts.pending_summary }} awaiting a summary · {{ counts.pending_rewrite }} awaiting a rewrite</p>
     </div>
 {% endblock %}

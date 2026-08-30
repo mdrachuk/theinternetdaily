@@ -227,3 +227,141 @@ async def test_batches_never_mix_sources(pipeline):
     for batch in _chunks_by_source(rows, 4):
         assert len({r.source for r in batch}) == 1, batch
     assert sum(len(b) for b in _chunks_by_source(rows, 4)) == len(rows)
+
+
+# --- no cap, and every article gets a page --------------------------------
+
+BIG_FEED_SIZE = 25
+
+
+def _big_feed() -> str:
+    items = "\n".join(
+        f"  <item>"
+        f"<title>Story {i:02d}</title>"
+        f"<link>http://bulk.invalid/{i}</link>"
+        f"<pubDate>Mon, 03 Aug 2026 {i % 24:02d}:00:00 GMT</pubDate>"
+        f"</item>"
+        for i in range(BIG_FEED_SIZE)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        f"<rss version=\"2.0\"><channel><title>Bulk</title>\n{items}\n"
+        "</channel></rss>\n"
+    )
+
+
+def _bulk_handler(request: httpx.Request) -> httpx.Response:
+    url = str(request.url)
+    if url.endswith("/feed"):
+        return httpx.Response(
+            200, content=_big_feed().encode(),
+            headers={"content-type": "application/rss+xml"},
+        )
+    return httpx.Response(
+        200, content=_page().encode(),
+        headers={"content-type": "text/html; charset=utf-8"},
+    )
+
+
+BULK_SOURCES = [{
+    "name": "Bulk Feed",
+    "kind": "rss",
+    "section": "Bulk",
+    "url": "http://bulk.invalid/feed",
+}]
+
+
+async def test_a_feed_is_never_capped_and_every_story_gets_a_page(tmp_path):
+    """The whole point of dropping `limit`: a feed that files 25 stories
+    between syncs puts 25 stories in the paper — the front page skims the top
+    and carries the rest below the fold, and each one is reachable as its own
+    page."""
+    from tid import edition as ed
+
+    store = SqliteStore(tmp_path / "state.db")
+    backend = FakeBackend()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_bulk_handler)
+    ) as client:
+        try:
+            await cmd_gather(client, store, BULK_SOURCES)
+            await cmd_summarize(store, backend)
+            await cmd_rewrite(store, backend)
+            articles = await collect_current_edition(store, BULK_SOURCES)
+        finally:
+            await store.close()
+
+    assert len(articles) == BIG_FEED_SIZE
+
+    paper = ed.build(articles, key="k" * 24, date="2026-08-12", built_at="")
+    # Nothing is dropped by the layout: the lead, the stories beside it, the
+    # front-page columns and everything below the fold add up to the whole feed.
+    assert paper.total == BIG_FEED_SIZE
+    assert {i.title for i in paper.items} == {
+        f"Story {i:02d}" for i in range(BIG_FEED_SIZE)
+    }
+    # And each one has a page of its own to link to.
+    assert all(paper.find(i.id) is not None for i in paper.items)
+
+
+# --- consecutive editions: each one starts where the last stopped ---------
+
+async def test_the_next_edition_carries_what_the_last_one_did_not(
+    tmp_path, monkeypatch
+):
+    """Two syncs, two editions. The second carries only what arrived after the
+    first, the first keeps what it published, and no article falls between
+    them."""
+    from tid import jobs
+    from tid.store import ArticleRow, url_hash
+
+    monkeypatch.setenv("TID_CACHE", str(tmp_path / "cache"))
+    store = SqliteStore(tmp_path / "state.db")
+    backend = FakeBackend()
+
+    async def _sync(client):
+        await cmd_gather(client, store, SOURCES)
+        await cmd_summarize(store, backend)
+        await cmd_rewrite(store, backend)
+        key = await jobs.current_key(store, SOURCES)
+        return await jobs.build_edition_for_key(key, store, SOURCES)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_handler)
+        ) as client:
+            first = await _sync(client)
+            assert {i.title for i in first.items} == {
+                "A Story About & Symbols", "Second Story",
+            }
+
+            # A later sync brings in one more story. Written straight to the
+            # store so its gather time can be placed after the first edition's
+            # watermark without waiting on a clock.
+            url = "http://articles.invalid/three"
+            await store.upsert_rows([ArticleRow(
+                id=url_hash(url), url=url, title="Third Story",
+                source="Test Feed", text="body", summary="lede",
+                body="Rewritten paragraph three.",
+                published="2026-08-05",
+                fetched_at="2099-01-01T00:00:00+00:00",
+            )])
+
+            second = await _sync(client)
+    finally:
+        await store.close()
+
+    assert [i.title for i in second.items] == ["Third Story"]
+    assert second.key != first.key
+
+    # Both papers are still on the shelf, and between them they carry
+    # everything the store ever had ready — each story exactly once.
+    import tid.archive as archive
+    published = [
+        title
+        for row in archive.readable(tmp_path / "cache")
+        for title in (i.title for i in archive.load(tmp_path / "cache", row.key).items)
+    ]
+    assert sorted(published) == [
+        "A Story About & Symbols", "Second Story", "Third Story",
+    ]

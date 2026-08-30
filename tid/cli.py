@@ -5,7 +5,7 @@ import asyncio
 import os
 import sys
 import time
-from datetime import date as date_cls, datetime, timedelta, timezone
+from datetime import date as date_cls, datetime
 from pathlib import Path
 
 import httpx
@@ -47,20 +47,18 @@ async def _fetch_source(
     """Resolve one source config to its raw items. None on failure."""
     name = src["name"]
     kind = src.get("kind", "rss")
-    limit = src.get("limit", 20)
     try:
         if kind == "hn":
             return await fetch_hn(
                 client,
                 source_name=name,
-                limit=limit,
                 since_hours=int(src.get("since_hours", 48)),
                 min_points=int(src.get("min_points", 50)),
             )
         if kind == "rss":
             since_hours = src.get("since_hours")
             return await fetch_rss(
-                client, name, src["url"], limit=limit,
+                client, name, src["url"],
                 since_hours=int(since_hours) if since_hours is not None else None,
             )
         if kind == "wikipedia_events":
@@ -319,34 +317,34 @@ async def gather_decorations(
     return decorations
 
 
-async def collect_current_edition(store: Store, sources: list[dict]) -> list[dict]:
-    """Pick the latest N articles per source (N = source.limit), in source
-    config order. Returns render-ready dicts."""
+async def collect_current_edition(
+    store: Store, sources: list[dict], since: str | None = None
+) -> list[dict]:
+    """Every article each source has gathered since `since`, in source config
+    order. Returns render-ready dicts.
+
+    There is no per-source cap. An edition is bounded by *when* it starts, not
+    by how many stories a feed happened to file: whatever the last sync
+    brought in, the paper carries, and every one of those articles gets its
+    own page. `since` is the previous edition's `fetched_at` high-water mark
+    (`jobs.build_edition_for_key` looks it up); None means everything ready in
+    the store, which is what the very first edition wants.
+
+    Note this makes the edition depend on the archive rather than the clock:
+    the same store yields the same edition on every render, and an article
+    leaves the front page by being superseded, not by ageing out.
+    """
     out: list[dict] = []
     for src in sources:
         name = src["name"]
-        limit = int(src.get("limit", 10))
-        # Rows are never deleted, so gather-time filtering alone would leave
-        # previously-ingested stale articles in the edition forever — the
-        # window has to be re-applied here at render time.
-        #
-        # Note this makes the edition clock-dependent: the same store and
-        # config yield a different edition once the window rolls past an
-        # article. The cache key (cache.edition_key) only moves on new
-        # content or config changes, so a cached PDF can outlive its window
-        # until the next ingest. That's deliberate — it beats serving an
-        # empty paper between ingests.
-        since_hours = src.get("since_hours")
-        since_date = (
-            (datetime.now(timezone.utc) - timedelta(hours=int(since_hours)))
-            .date().isoformat()
-            if since_hours is not None else None
-        )
-        rows = await store.latest_per_source(name, limit, since_date=since_date)
+        rows = await store.ready_since(name, since)
         for r in rows:
             out.append({
                 "id": r.id,
                 "source": r.source,
+                # Carried so `archive.record` can take the edition's watermark
+                # off it. `edition.Item` has no such field, so it stops here.
+                "fetched_at": r.fetched_at,
                 # Layout hints that live in sources.toml, carried on every
                 # article so the edition builder never needs the config again.
                 "section": src.get("section") or name,
