@@ -53,8 +53,10 @@ services:
     ipc: host
     ports:
       # Exposed for benchmarking and for `curl /v1/models`; the app reaches it
-      # over the compose network either way.
-      - "${VLLM_PORT:-8001}:8000"
+      # over the compose network either way. Same rule as TID_BIND: the default
+      # publishes on every interface, so set VLLM_BIND=127.0.0.1 to keep an
+      # unauthenticated inference server off the LAN.
+      - "${VLLM_BIND:-0.0.0.0}:${VLLM_PORT:-8001}:8000"
     deploy:
       resources:
         reservations:
