@@ -17,7 +17,7 @@ async def _add(store, title, *, text="body text", published=None,
     url = f"http://example.invalid/{title}"
     if fetched_at is not None:
         # insert_raw stamps fetched_at off the clock. A test about the edition
-        # boundary has to place its rows in time itself, and the bulk-copy
+        # window has to place its rows in time itself, and the bulk-copy
         # path is the one part of the protocol that lets it.
         await store.upsert_rows([ArticleRow(
             id=url_hash(url), url=url, title=title, source=source, text=text,
@@ -78,16 +78,16 @@ async def test_image_is_stored_and_backfilled_on_a_regather(store):
     onto the row it already wrote — that is how an existing install picks
     images up without re-extracting everything."""
     await _add(store, "pic", summary="s")
-    (row,) = await store.ready_since("Src")
+    (row,) = await store.unpublished("Src")
     assert row.image is None
 
     await _add(store, "pic", image="https://cdn.invalid/a.jpg")
-    (row,) = await store.ready_since("Src")
+    (row,) = await store.unpublished("Src")
     assert row.image == "https://cdn.invalid/a.jpg"
 
     # ...and a later re-gather must not overwrite it with a different one.
     await _add(store, "pic", image="https://cdn.invalid/b.jpg")
-    (row,) = await store.ready_since("Src")
+    (row,) = await store.unpublished("Src")
     assert row.image == "https://cdn.invalid/a.jpg"
 
 
@@ -110,7 +110,7 @@ async def test_pending_rewrite_tracks_body_not_summary(store):
 
 async def test_set_summary_and_body_stamp_their_timestamps(store):
     aid = await _add(store, "stamped", summary="a summary", body="a body")
-    rows = await store.ready_since("Src")
+    rows = await store.unpublished("Src")
     row = next(r for r in rows if r.id == aid)
     assert row.summary == "a summary"
     assert row.body == "a body"
@@ -119,55 +119,81 @@ async def test_set_summary_and_body_stamp_their_timestamps(store):
 
 # --- render ---------------------------------------------------------------
 
-async def test_ready_since_is_newest_first_and_uncapped(store):
+async def test_unpublished_is_newest_first_and_uncapped(store):
     """No per-source cap: four stories in, four stories out."""
     for i in range(1, 5):
         await _add(store, f"a{i}", published=f"2030-01-0{i}", summary="s")
-    rows = await store.ready_since("Src")
+    rows = await store.unpublished("Src")
     assert [r.title for r in rows] == ["a4", "a3", "a2", "a1"]
 
 
-async def test_ready_since_needs_text_and_summary(store):
+async def test_unpublished_needs_text_and_summary(store):
     await _add(store, "no-summary", published="2030-01-01")
     await _add(store, "no-text", text=None, published="2030-01-01")
-    assert await store.ready_since("Src") == []
+    assert await store.unpublished("Src") == []
 
 
-async def test_ready_since_scopes_to_one_source(store):
+async def test_unpublished_scopes_to_one_source(store):
     await _add(store, "mine", summary="s", source="Src")
     await _add(store, "theirs", summary="s", source="Other")
-    rows = await store.ready_since("Src")
+    rows = await store.unpublished("Src")
     assert [r.title for r in rows] == ["mine"]
 
 
-async def test_ready_since_cuts_on_gather_time_not_publication_date(store):
-    """The boundary is when we fetched it, not when it was written. A blog
-    post from 2020 that only reached us in this sync is new to the reader."""
-    await _add(store, "seen", summary="s", published="2030-01-01",
-               fetched_at="2026-01-01T00:00:00+00:00")
-    await _add(store, "ancient-but-new", summary="s", published="2020-01-01",
-               fetched_at="2026-01-02T00:00:00+00:00")
+async def test_unpublished_drops_what_an_edition_already_carried(store):
+    aid = await _add(store, "published", summary="s")
+    await _add(store, "still-new", summary="s")
+    await store.mark_rendered([aid], "2026-01-01")
+    assert [r.title for r in await store.unpublished("Src")] == ["still-new"]
+
+
+async def test_a_straggler_from_a_published_gather_still_runs(store):
+    """The bug this replaced a timestamp cutoff to fix. One gather stamps
+    every row with the same `fetched_at`, but they finish summarizing at very
+    different times. The one that was still pending when the edition went out
+    must run in the next one — a "newer than the last edition" cutoff would
+    drop it forever, because it shares its second with articles that made it.
+    """
+    same_second = "2026-01-01T06:00:00+00:00"
+    carried = await _add(store, "carried", summary="s", fetched_at=same_second)
+    await _add(store, "still-rewriting", fetched_at=same_second)  # no summary
+    await store.mark_rendered([carried], "2026-01-01")
+    assert await store.unpublished("Src") == []
+
+    # It finishes, and the next edition picks it up.
+    await store.set_summary(url_hash("http://example.invalid/still-rewriting"), "s")
+    assert [r.title for r in await store.unpublished("Src")] == ["still-rewriting"]
+
+
+async def test_floor_bounds_an_unpublished_query(store):
+    await _add(store, "ancient", summary="s",
+               fetched_at="2020-01-01T00:00:00+00:00")
+    await _add(store, "recent", summary="s",
+               fetched_at="2030-01-01T00:00:00+00:00")
     titles = [
-        r.title for r in await store.ready_since(
-            "Src", "2026-01-01T12:00:00+00:00"
-        )
+        r.title for r in await store.unpublished("Src", "2025-01-01T00:00:00+00:00")
     ]
-    assert titles == ["ancient-but-new"]
+    assert titles == ["recent"]
 
 
-async def test_ready_since_boundary_is_exclusive(store):
-    """The previous edition's watermark is the newest article it carried, so
-    an article sitting exactly on it has already been published."""
-    await _add(store, "on-the-mark", summary="s",
-               fetched_at="2026-01-01T00:00:00+00:00")
-    assert await store.ready_since("Src", "2026-01-01T00:00:00+00:00") == []
+async def test_retire_before_publishes_the_backlog_without_carrying_it(store):
+    """Retiring is what stops a floored first edition from deferring the
+    backlog to the second one rather than excluding it."""
+    await _add(store, "ancient", summary="s",
+               fetched_at="2020-01-01T00:00:00+00:00")
+    await _add(store, "recent", summary="s",
+               fetched_at="2030-01-01T00:00:00+00:00")
+    await _add(store, "not-ready", fetched_at="2020-01-01T00:00:00+00:00")
 
-
-async def test_ready_since_none_returns_everything_ready(store):
-    """The first edition has no predecessor to follow."""
-    await _add(store, "a", summary="s", fetched_at="2020-01-01T00:00:00+00:00")
-    await _add(store, "b", summary="s", fetched_at="2030-01-01T00:00:00+00:00")
-    assert len(await store.ready_since("Src")) == 2
+    n = await store.retire_before("2025-01-01T00:00:00+00:00", "2026-01-01")
+    assert n == 1
+    # The old one is out of the running; the recent one is untouched...
+    assert [r.title for r in await store.unpublished("Src")] == ["recent"]
+    # ...and the unready one was left alone, so it still runs once it is ready.
+    await store.set_summary(url_hash("http://example.invalid/not-ready"), "s")
+    assert sorted(r.title for r in await store.unpublished("Src")) == [
+        "not-ready", "recent",
+    ]
 
 
 async def test_sort_date_falls_back_through_published_surfaced_fetched(store):

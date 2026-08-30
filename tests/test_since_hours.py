@@ -3,11 +3,11 @@
 `since_hours` is a **gather-time** bound and nothing else: it says how far
 back into a feed one fetch reaches. It used to be re-applied at render time
 as well, back when an edition was "the latest N per source" and stale rows
-would otherwise sit in it forever. The edition now starts at the previous
-edition's `fetched_at` watermark, so staleness is handled by construction —
-and re-filtering by publication date would be actively wrong, since a blog
-post written last year that a feed surfaced to us this morning is news to the
-reader. Section 2 pins that down.
+would otherwise sit in it forever. An edition is now every article no previous
+edition carried, so staleness is handled by construction — and re-filtering by
+publication date would be actively wrong, since a blog post written last year
+that a feed surfaced to us this morning is news to the reader. Section 2 pins
+that down.
 
 Also covers the two things that surround it: the edition cache key has to
 move when since_hours changes, and fetch_hn's Algolia numericFilters have to
@@ -144,7 +144,7 @@ async def _add(store, title, published=None, surfaced=None, ready=True):
 
 
 async def _titles(store, **kwargs):
-    return [r.title for r in await store.ready_since("Src", **kwargs)]
+    return [r.title for r in await store.unpublished("Src", **kwargs)]
 
 
 async def test_publication_date_does_not_bound_the_edition(store):

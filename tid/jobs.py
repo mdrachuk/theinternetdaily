@@ -46,13 +46,22 @@ async def current_key(store: Store, sources: list[dict]) -> str:
 
 
 async def build_edition_for_key(
-    key: str, store: Store, sources: list[dict]
+    key: str, store: Store, sources: list[dict],
+    *, snapshot: bool | None = None,
 ) -> ed.Edition:
     """Assemble the edition for `key`, snapshotting it on first request.
 
-    The edition starts where the last one stopped: `archive.boundary` reads
-    the previous paper's `fetched_at` watermark off disk, and every article
-    gathered after it — all of them, from every source — goes in.
+    The edition is every ready article no previous edition carried, from every
+    source. Taking a snapshot is what *makes* those articles published — the
+    store stamps `rendered_at` on each one — so the two have to happen
+    together, and in that order: a snapshot whose articles failed to be marked
+    repeats itself, which is a great deal better than marking articles that
+    never made it into a paper.
+
+    `snapshot` defaults to "not while an ingest is running". A paper assembled
+    halfway through one would carry whatever had finished rewriting at that
+    moment and mark the rest published-but-absent; the ingest builds its own
+    edition when it is done, and passes True.
 
     Cheap — a store read and a JSON write, no LLM and no typesetting — so the
     web process doing this inline on a cache miss costs a reader a moment, not
@@ -61,26 +70,42 @@ async def build_edition_for_key(
     cache = config.cache_dir()
     existing = archive.load(cache, key)
     if existing is not None:
-        return existing
+        return ed.refiled(existing, sources)
+    if snapshot is None:
+        snapshot = not ingest_running()
     async with _lock_for(key):
         existing = archive.load(cache, key)
         if existing is not None:
-            return existing
+            return ed.refiled(existing, sources)
         ensure_dir(cache)
-        content = await store.max_fetched_at()
-        since = archive.boundary(cache, content)
-        articles = await collect_current_edition(store, sources, since)
         today = date.today().isoformat()
-        if not articles:
-            # Nothing new since the last paper. Deliberately not snapshotted:
-            # an empty edition would sit in the archive under a key that only
-            # moves when new content lands, i.e. exactly when it stops being
-            # empty — and it would become the boundary the *next* edition
-            # starts from, with no watermark to offer it.
-            return ed.build([], key=key, date=today, built_at="")
-        return archive.record(
-            cache, key, today, articles, content=content, since=since
-        )
+        floor = archive.floor(cache)
+        if floor is not None and snapshot:
+            # Nothing has ever been published, so this edition runs a window.
+            # Everything older than it has to be retired in the same breath:
+            # the *next* edition sees published history, applies no window, and
+            # would otherwise hand the reader the entire backlog the window
+            # just excluded.
+            retired = await store.retire_before(floor, today)
+            if retired:
+                _log(f"[edition] retired {retired} article(s) older than {floor}")
+        articles = await collect_current_edition(store, sources, floor)
+        if not articles or not snapshot:
+            built = ed.build(articles, key=key, date=today, built_at="")
+            if built.total:
+                return built
+            # Nothing new to publish. Keep showing the last paper rather than a
+            # blank one: a sources.toml edit moves the key without gathering
+            # anything, and that must not empty the front page.
+            previous = archive.latest(cache)
+            if previous is not None:
+                loaded = archive.load(cache, previous.key)
+                if loaded is not None:
+                    return ed.refiled(loaded, sources)
+            return built
+        built = archive.record(cache, key, today, articles)
+        await store.mark_rendered([a["id"] for a in articles], today)
+        return built
 
 
 async def warm_icons(edition: ed.Edition) -> int:
@@ -158,7 +183,11 @@ async def ingest() -> None:
             snapshot = None
             try:
                 key = await current_key(store, sources)
-                built = await build_edition_for_key(key, store, sources)
+                # snapshot=True: this is the ingest's own build, after
+                # the pipeline has drained, so the paper is complete.
+                built = await build_edition_for_key(
+                    key, store, sources, snapshot=True
+                )
                 if built.total:
                     snapshot = archive.snapshot_path(config.cache_dir(), key)
                     await warm_icons(built)

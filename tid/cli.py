@@ -318,33 +318,29 @@ async def gather_decorations(
 
 
 async def collect_current_edition(
-    store: Store, sources: list[dict], since: str | None = None
+    store: Store, sources: list[dict], floor: str | None = None
 ) -> list[dict]:
-    """Every article each source has gathered since `since`, in source config
-    order. Returns render-ready dicts.
+    """Every ready article no edition has carried yet, in source config order.
+    Returns render-ready dicts.
 
-    There is no per-source cap. An edition is bounded by *when* it starts, not
-    by how many stories a feed happened to file: whatever the last sync
-    brought in, the paper carries, and every one of those articles gets its
-    own page. `since` is the previous edition's `fetched_at` high-water mark
-    (`jobs.build_edition_for_key` looks it up); None means everything ready in
-    the store, which is what the very first edition wants.
+    There is no per-source cap. An edition is bounded by what is new, not by
+    how many stories a feed happened to file: whatever the last sync brought
+    in, the paper carries, and every one of those articles gets its own page.
 
-    Note this makes the edition depend on the archive rather than the clock:
-    the same store yields the same edition on every render, and an article
-    leaves the front page by being superseded, not by ageing out.
+    An article runs in the first edition published after it becomes ready —
+    which is not the same as the first one after it was gathered, because
+    summarizing and rewriting a whole feed takes longer than one edition's
+    worth of patience. `floor` is only for the case where nothing has ever been
+    published; `jobs.build_edition_for_key` gets it from `archive.floor`.
     """
     out: list[dict] = []
     for src in sources:
         name = src["name"]
-        rows = await store.ready_since(name, since)
+        rows = await store.unpublished(name, floor)
         for r in rows:
             out.append({
                 "id": r.id,
                 "source": r.source,
-                # Carried so `archive.record` can take the edition's watermark
-                # off it. `edition.Item` has no such field, so it stops here.
-                "fetched_at": r.fetched_at,
                 # Layout hints that live in sources.toml, carried on every
                 # article so the edition builder never needs the config again.
                 "section": src.get("section") or name,

@@ -309,8 +309,8 @@ async def test_a_feed_is_never_capped_and_every_story_gets_a_page(tmp_path):
 async def test_the_next_edition_carries_what_the_last_one_did_not(
     tmp_path, monkeypatch
 ):
-    """Two syncs, two editions. The second carries only what arrived after the
-    first, the first keeps what it published, and no article falls between
+    """Two syncs, two editions. The second carries only what the first did
+    not, the first keeps what it published, and no article falls between
     them."""
     from tid import jobs
     from tid.store import ArticleRow, url_hash
@@ -324,7 +324,9 @@ async def test_the_next_edition_carries_what_the_last_one_did_not(
         await cmd_summarize(store, backend)
         await cmd_rewrite(store, backend)
         key = await jobs.current_key(store, SOURCES)
-        return await jobs.build_edition_for_key(key, store, SOURCES)
+        return await jobs.build_edition_for_key(
+            key, store, SOURCES, snapshot=True
+        )
 
     try:
         async with httpx.AsyncClient(
@@ -335,9 +337,8 @@ async def test_the_next_edition_carries_what_the_last_one_did_not(
                 "A Story About & Symbols", "Second Story",
             }
 
-            # A later sync brings in one more story. Written straight to the
-            # store so its gather time can be placed after the first edition's
-            # watermark without waiting on a clock.
+            # A later sync brings in one more story, written straight to the
+            # store so the test does not depend on the mock feed changing.
             url = "http://articles.invalid/three"
             await store.upsert_rows([ArticleRow(
                 id=url_hash(url), url=url, title="Third Story",

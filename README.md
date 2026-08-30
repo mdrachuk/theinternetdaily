@@ -360,12 +360,12 @@ pure and runs per request:
 3. **rewrite** — batches up to 8 articles per LLM call and produces a
    clean, properly-paragraphed, translated-to-English version of each
    article body for the renderer. Preserves code fences and `$math$` exactly.
-4. **assemble** — pulls every article gathered since the previous edition's
-   watermark, from every source, and writes them to a snapshot keyed by a
-   hash of "what's in the store" + "what's in sources.toml". Same content +
-   same config → same snapshot. This is cheap: a store read and a JSON write,
-   no LLM and no typesetting, which is why it happens inline on a cache miss
-   rather than through the queue.
+4. **assemble** — pulls every ready article no previous edition carried, from
+   every source, writes them to a snapshot keyed by a hash of "what's in the
+   store" + "what's in sources.toml", and stamps `rendered_at` on each one so
+   the next edition knows to skip it. This is cheap: a store read and a JSON
+   write, no LLM and no typesetting, which is why it happens inline on a cache
+   miss rather than through the queue.
 5. **lay out** — `tid/edition.py` turns that flat list into a front page:
    which story leads, which two go beside it, what each column holds, what
    continues below. It is pure and it runs per request, so the layout is
@@ -410,10 +410,13 @@ source is re-filed, a rewrite lands, a gather brings in fifty more stories),
 and without a snapshot "the edition of 12 August" would quietly become
 "whatever the store would produce for 12 August today".
 
-Each snapshot also records the high-water mark it reached: `watermark`, the
-newest `fetched_at` among the articles it carries. That is where the *next*
-edition starts, which is what makes "everything since the last sync" a fact on
-disk rather than a guess about the clock.
+Which articles an edition carried is not recorded in the snapshot: the store
+stamps `rendered_at` on each one as it is published. "Has this run yet" is
+therefore a fact about the article, not a window that has to be reconstructed
+— which matters because one gather stamps every row it writes with the same
+`fetched_at` second, while those rows finish summarizing and rewriting at very
+different times. A cutoff of "newer than the last edition" would silently drop
+every article still in the pipeline when that edition went out.
 
 Nothing is ever deleted. An edition stays at `/e/{key}` for as long as its
 file is on disk, and the prev/next arrows in the nav walk the archive
@@ -512,18 +515,27 @@ Two things bound an edition, and neither is a count:
   reaches. It exists so that pointing at an archive feed doesn't walk back
   through five years on the first run; it is not a way to keep the paper
   short. Leave it unset and you take whatever the feed is currently carrying.
-- **The previous edition's watermark, at assemble time.** Each snapshot
-  records the newest `fetched_at` it carried, and the next edition starts
-  after it. So an article appears in exactly one edition: the first one
-  published after we gathered it. Nothing repeats, and nothing is skipped —
-  a story that was still awaiting a summary when the last paper went out is
-  simply carried by the next one.
+- **Publication state, at assemble time.** Every article an edition carries is
+  stamped `rendered_at`, and the next edition takes what is still unstamped.
+  So an article runs in exactly one edition: the first one published after it
+  becomes *ready*, which is not the same as the first one after it was
+  gathered — rewriting a whole feed through a local model takes longer than
+  one edition's worth of patience, and a story that is still in the queue when
+  the paper goes out simply runs in the next one.
 
-That makes the size of an edition a property of the day rather than of the
-config: a quiet weekend gives you a thin paper, a busy news day a fat one. If
-an edition is consistently longer than you want to read, the fix is fewer
-sources or a stricter `min_points`, not a cap that silently drops stories you
-subscribed to.
+The one exception is an install with no published history at all — a fresh
+setup, or an archive that has been cleared. The store never deletes rows, so
+"everything unpublished" would be months of accumulated articles on one front
+page. That first edition runs a 30-hour window instead
+(`archive.NO_HISTORY_WINDOW`), and retires everything older than it: marked
+published without being carried, so the backlog is excluded rather than
+deferred to the following edition.
+
+If a new edition comes out empty — you edited `sources.toml`, which moves the
+edition key without gathering anything — the front page keeps showing the last
+one rather than going blank. Section and medium are re-read from
+`sources.toml` on every render, so re-filing a source into another column
+shows up immediately.
 
 > **On the reading time.** **30–60 articles** is a comfortable 30–60 minute
 > read, and about what fills a front page and its continuation without either

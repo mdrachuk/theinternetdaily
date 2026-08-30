@@ -195,22 +195,38 @@ class MongoStore:
         )
         return [_from_doc(d) async for d in cursor]
 
-    async def ready_since(
-        self, source: str, since: str | None = None
+    async def unpublished(
+        self, source: str, floor: str | None = None
     ) -> list[ArticleRow]:
-        """Every ready article for `source` gathered after the `fetched_at`
-        boundary `since`. See the SQLite store for why the boundary is a
-        gather timestamp and not a publication date."""
+        """Every ready article for `source` no edition has carried yet. See
+        the SQLite store for why publication state is per-article rather than
+        a timestamp comparison."""
         await self.ensure_indexes()
         query: dict[str, Any] = {
             "source": source,
             "text": {"$ne": None},
             "summary": {"$ne": None},
+            "rendered_at": None,
         }
-        if since is not None:
-            query["fetched_at"] = {"$gt": since}
+        if floor is not None:
+            query["fetched_at"] = {"$gt": floor}
         cursor = self.col.find(query).sort("sort_date", -1)
         return [_from_doc(d) async for d in cursor]
+
+    async def retire_before(self, cutoff: str, date: str) -> int:
+        """Mark ready, never-published articles older than `cutoff` as
+        published without carrying them. See the SQLite store."""
+        await self.ensure_indexes()
+        res = await self.col.update_many(
+            {
+                "rendered_at": None,
+                "text": {"$ne": None},
+                "summary": {"$ne": None},
+                "fetched_at": {"$lte": cutoff},
+            },
+            {"$set": {"rendered_at": date}},
+        )
+        return res.modified_count
 
     async def mark_rendered(self, article_ids: list[str], date: str) -> None:
         if not article_ids:

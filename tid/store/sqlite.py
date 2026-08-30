@@ -208,38 +208,67 @@ class SqliteStore:
 
         return await self._run(_q)
 
-    async def ready_since(
-        self, source: str, since: str | None = None
+    async def unpublished(
+        self, source: str, floor: str | None = None
     ) -> list[ArticleRow]:
-        """Every ready (text + summary) article for `source` gathered after
-        `since`, newest first by best available date.
+        """Every ready (text + summary) article for `source` that no edition
+        has carried yet, newest first by best available date.
 
-        `since` is a `fetched_at` timestamp — when we last published, not when
-        the article was written. That is the difference that makes an edition
-        "everything new since the last sync": a blog post from last week that
-        a feed only surfaced to us this morning is new to the reader, and a
-        date-based window would have thrown it away. None means no boundary,
-        i.e. everything ready in the store.
+        Publication state is per-article — `rendered_at`, stamped when an
+        edition snapshots the article — and not a timestamp comparison. That
+        distinction is the whole point: one gather stamps every row it writes
+        with the same `fetched_at` second, but those rows finish summarizing
+        and rewriting at very different times. A cutoff of "newer than the last
+        edition's high-water mark" silently drops every article that was still
+        in the pipeline when that edition went out, because it shares its
+        second with articles that made it.
 
-        Safe as a string comparison: `fetched_at` is always
-        `datetime.now(timezone.utc).isoformat(timespec="seconds")`, so
-        lexicographic order is chronological order.
+        `floor` is a `fetched_at` bound used only when there is no published
+        history to go on (see `archive.floor`); None means publication state
+        alone decides.
         """
         def _q() -> list[ArticleRow]:
             cur = self.con.execute(
                 f"""
                 {_SELECT}
                  WHERE source = ?1
-                   AND text     IS NOT NULL
-                   AND summary  IS NOT NULL
+                   AND text        IS NOT NULL
+                   AND summary     IS NOT NULL
+                   AND rendered_at IS NULL
                    AND (?2 IS NULL OR fetched_at > ?2)
                  ORDER BY COALESCE(published, surfaced, fetched_at) DESC
                 """,
-                (source, since),
+                (source, floor),
             )
             return [_row(r) for r in cur.fetchall()]
 
         return await self._run(_q)
+
+    async def retire_before(self, cutoff: str, date: str) -> int:
+        """Mark every ready, never-published article older than `cutoff` as
+        published, without putting it in a paper.
+
+        Used once, when an edition runs with a floor because there is no
+        history to follow. Without it the backlog the floor just excluded would
+        simply arrive in the *next* edition, which sees published history and
+        so applies no floor at all — turning the bound into a one-edition
+        deferral rather than a bound. Returns how many were retired.
+        """
+        def _w() -> int:
+            cur = self.con.execute(
+                """
+                UPDATE article SET rendered_at = ?
+                 WHERE rendered_at IS NULL
+                   AND text     IS NOT NULL
+                   AND summary  IS NOT NULL
+                   AND fetched_at <= ?
+                """,
+                (date, cutoff),
+            )
+            self.con.commit()
+            return cur.rowcount
+
+        return await self._run(_w)
 
     async def mark_rendered(self, article_ids: list[str], date: str) -> None:
         def _w() -> None:

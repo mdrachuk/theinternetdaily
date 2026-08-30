@@ -262,6 +262,29 @@ def filtered(edition: Edition, medium: str | None) -> Edition:
     return build(kept, edition.key, edition.date, edition.built_at)
 
 
+def refiled(edition: Edition, sources: list[dict]) -> Edition:
+    """The same edition with `section` and `medium` taken from sources.toml
+    as it reads *now*.
+
+    Those two are layout, not content: re-filing a source into another column
+    should show up the moment the file is saved, not after the next gather.
+    Snapshots bake in the values that were live when they were written, so the
+    fix is to re-apply them on the way out — the articles are untouched, and
+    `build` re-runs anyway on every render.
+    """
+    by_source = {s.get("name"): s for s in sources}
+    kept = []
+    for i in edition.items:
+        src = by_source.get(i.source) or {}
+        kept.append(i.as_dict() | {
+            "text": i.body,
+            "summary": i.dek,
+            "section": src.get("section") or i.source,
+            "medium": src.get("medium") or i.medium,
+        })
+    return build(kept, edition.key, edition.date, edition.built_at)
+
+
 # --- snapshots ------------------------------------------------------------
 #
 # An edition is stored as the articles it was built from, not as its layout:

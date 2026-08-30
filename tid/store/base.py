@@ -115,9 +115,11 @@ class Store(Protocol):
     # --- render ---------------------------------------------------------
     async def pending_render(self) -> list[ArticleRow]: ...
 
-    async def ready_since(
-        self, source: str, since: str | None = None
+    async def unpublished(
+        self, source: str, floor: str | None = None
     ) -> list[ArticleRow]: ...
+
+    async def retire_before(self, cutoff: str, date: str) -> int: ...
 
     async def mark_rendered(self, article_ids: list[str], date: str) -> None: ...
 
