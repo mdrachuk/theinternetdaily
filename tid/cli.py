@@ -557,10 +557,16 @@ async def cmd_migrate(src_url: str, dst_url: str, batch: int = 500) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tid")
-    p.add_argument("--config", type=Path, default=Path("sources.toml"))
+    # Defaults come from the environment, not from literals: inside the
+    # container TID_STATE and TID_CONFIG are what point at /data and the
+    # mounted sources.toml, and a one-off `tid topics` there has to reach the
+    # same store the web process is serving from — not create an empty
+    # state.db in the working directory.
+    p.add_argument("--config", type=Path, default=config.config_path())
     p.add_argument("--out",    type=Path, default=Path("archive"))
-    p.add_argument("--state",  type=Path, default=Path("state.db"),
-                   help="SQLite file (shorthand for --store)")
+    p.add_argument("--state",  type=Path, default=config.state_path(),
+                   help="SQLite file (shorthand for --store); "
+                        "default: $TID_STATE, else state.db")
     p.add_argument("--backend", default=None,
                    help="LLM backend: anthropic, vllm, or ollama "
                         "(default: LLM_BACKEND, else anthropic)")
