@@ -21,7 +21,8 @@ from .base import ArticleRow, norm_title, now_iso, url_hash
 _FIELDS = (
     "url", "title", "title_norm", "source", "text", "body", "summary",
     "surfaced", "published", "fetched_at", "extracted_at", "summarized_at",
-    "rewritten_at", "rendered_at", "image",
+    "rewritten_at", "rendered_at", "image", "topic", "topic_order",
+    "main_rank",
 )
 
 
@@ -53,6 +54,9 @@ def _from_doc(doc: dict[str, Any]) -> ArticleRow:
         rewritten_at=doc.get("rewritten_at"),
         rendered_at=doc.get("rendered_at"),
         image=doc.get("image"),
+        topic=doc.get("topic"),
+        topic_order=doc.get("topic_order"),
+        main_rank=doc.get("main_rank"),
     )
 
 
@@ -184,6 +188,25 @@ class MongoStore:
         await self.col.update_one(
             {"_id": article_id},
             {"$set": {"body": body, "rewritten_at": now_iso()}},
+        )
+
+    # --- topics ---------------------------------------------------------
+
+    async def set_topic(
+        self,
+        article_id: str,
+        topic: str | None,
+        topic_order: int | None = None,
+        main_rank: int | None = None,
+    ) -> None:
+        """File (or, with topic=None, unfile) one article. See store.base."""
+        await self.col.update_one(
+            {"_id": article_id},
+            {"$set": {
+                "topic": topic,
+                "topic_order": topic_order,
+                "main_rank": main_rank,
+            }},
         )
 
     # --- render ---------------------------------------------------------

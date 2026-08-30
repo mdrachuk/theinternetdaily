@@ -37,6 +37,13 @@ class ArticleRow:
 
     `id` is `url_hash(url)`. `text` is the raw extracted body (NULL when
     extraction failed), `body` the rewritten one, `summary` the lede.
+
+    The three `topic` fields are the edition's own filing, written by the topic
+    stage (`tid.topics`) and re-written from scratch every time it runs: a
+    topic set is a judgement about one edition, so an article that is still
+    unpublished when the next one is named gets re-filed with it. All three are
+    NULL when the stage has not run or could not place the article, and
+    `tid.edition` then falls back to the `sources.toml` section.
     """
     id: str
     url: str
@@ -54,6 +61,9 @@ class ArticleRow:
     rewritten_at: str | None = None
     rendered_at: str | None = None    # ISO date of first edition inclusion
     image: str | None = None          # lead image URL, from the feed or og:image
+    topic: str | None = None          # LLM-assigned topic for its edition
+    topic_order: int | None = None    # that topic's rank among the edition's
+    main_rank: int | None = None      # 0 = the topic's lead story; NULL = not main
 
     def __post_init__(self) -> None:
         if not self.title_norm:
@@ -111,6 +121,22 @@ class Store(Protocol):
     # --- rewrite --------------------------------------------------------
     async def pending_rewrite(self) -> list[ArticleRow]: ...
     async def set_body(self, article_id: str, body: str) -> None: ...
+
+    # --- topics ---------------------------------------------------------
+    async def set_topic(
+        self,
+        article_id: str,
+        topic: str | None,
+        topic_order: int | None = None,
+        main_rank: int | None = None,
+    ) -> None:
+        """File an article under an edition topic, or (with None) unfile it.
+
+        Always a full overwrite, never a merge: the stage re-runs over every
+        unpublished article each ingest, and an article left holding a topic
+        that this edition no longer has would open a column of its own.
+        """
+        ...
 
     # --- render ---------------------------------------------------------
     async def pending_render(self) -> list[ArticleRow]: ...

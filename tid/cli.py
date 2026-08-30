@@ -275,6 +275,111 @@ async def cmd_rewrite(
     )
 
 
+async def cmd_topics(
+    store: Store, backend: LLMBackend, workers: int | None = None
+) -> int:
+    """Decide what today's edition is about, and file every article into it.
+
+    Three passes over the articles that are ready and unpublished — which is
+    exactly what the next edition will carry:
+
+      1. one call naming the edition's topics, most significant first;
+      2. one call per article choosing its most specific topic;
+      3. one call per topic naming that topic's main stories, in order.
+
+    Runs over the whole unpublished set every time, not over "articles missing
+    a topic". A topic set describes one edition: an article that was filed
+    yesterday and still has not been published belongs in *this* paper's
+    sections, under this paper's names. So every row is rewritten, including
+    back to unfiled when the model cannot place it.
+
+    Failure at any pass costs the layout, never the edition: unfiled articles
+    fall back to their sources.toml section (`tid.edition`), so a paper still
+    comes out.
+    """
+    from .topics import propose_topics, select_main, select_topic
+
+    rows = await store.pending_render()
+    if not rows:
+        _log("[topics] nothing pending")
+        return 0
+    # Newest first: `topic_max_articles` truncates the naming prompt on a small
+    # model, and the day's newest stories are the ones that should shape the
+    # sections.
+    rows.sort(key=lambda r: r.sort_date, reverse=True)
+
+    topics = await propose_topics(
+        backend, [(r.title, r.summary or "") for r in rows]
+    )
+    if not topics:
+        _log(f"[topics] the model named no usable topics for {len(rows)} "
+             "article(s); the edition falls back to sources.toml sections")
+        return 0
+    _log(f"[topics] {len(rows)} article(s) → "
+         + ", ".join(t.name for t in topics))
+
+    workers = _resolve_workers(backend, workers)
+    sem = asyncio.Semaphore(workers)
+
+    async def _label(row: ArticleRow) -> str:
+        async with sem:
+            return await select_topic(
+                backend, row.title, row.summary or "", topics
+            )
+
+    labels = await asyncio.gather(
+        *(_label(r) for r in rows), return_exceptions=True
+    )
+    filed: dict[str, list[ArticleRow]] = {t.name: [] for t in topics}
+    unfiled: list[ArticleRow] = []
+    for row, label in zip(rows, labels):
+        if isinstance(label, BaseException):
+            _log(f"  [error] filing {row.title[:60]}: {label}")
+            unfiled.append(row)
+        elif label in filed:
+            filed[label].append(row)
+        else:
+            unfiled.append(row)
+
+    async def _mains(name: str, group: list[ArticleRow]) -> list[int]:
+        async with sem:
+            return await select_main(
+                backend, name, [(r.title, r.summary or "") for r in group]
+            )
+
+    names = [t.name for t in topics if filed[t.name]]
+    chosen = await asyncio.gather(
+        *(_mains(name, filed[name]) for name in names), return_exceptions=True
+    )
+
+    mains: dict[str, list[int]] = {}
+    for name, res in zip(names, chosen):
+        if isinstance(res, BaseException):
+            _log(f"  [error] main stories for {name}: {res}")
+            mains[name] = []
+        else:
+            mains[name] = res
+
+    for order, topic in enumerate(topics):
+        group = filed[topic.name]
+        picks = mains.get(topic.name, [])
+        for i, row in enumerate(group):
+            rank = picks.index(i) if i in picks else None
+            await store.set_topic(row.id, topic.name, order, rank)
+        if group:
+            _log(f"  · {topic.name}: {len(group)} article(s), "
+                 f"{len(picks)} main")
+    for row in unfiled:
+        # Clear rather than leave: the row may still carry a topic from the
+        # previous edition, and a name this edition never chose would open a
+        # column of one article.
+        await store.set_topic(row.id, None, None, None)
+    if unfiled:
+        _log(f"  · unfiled: {len(unfiled)} article(s) keep their "
+             "sources.toml section")
+    return 0
+
+
 def _format_date(iso: str | None) -> str:
     if not iso:
         return ""
@@ -341,6 +446,11 @@ async def collect_current_edition(
             out.append({
                 "id": r.id,
                 "source": r.source,
+                # What the topic stage decided this edition is about. `section`
+                # below is the fallback for anything it did not file.
+                "topic": r.topic,
+                "topic_order": r.topic_order,
+                "main_rank": r.main_rank,
                 # Layout hints that live in sources.toml, carried on every
                 # article so the edition builder never needs the config again.
                 "section": src.get("section") or name,
@@ -391,14 +501,22 @@ async def cmd_ingest(
     sources: list[dict],
     workers: int | None = None,
 ) -> int:
-    """Run gather + summarize + rewrite. No PDF — that's the renderer's job."""
+    """gather + summarize + rewrite + topics. No PDF — that's the renderer's job.
+
+    Topics run last because they read the finished set: only an article that
+    has a summary and a rewritten body will be in the next edition, and the
+    topic set is a judgement about that edition rather than about each article.
+    """
     rc = await cmd_gather(client, store, sources)
     if rc:
         return rc
     rc = await cmd_summarize(store, backend, workers)
     if rc:
         return rc
-    return await cmd_rewrite(store, backend, workers)
+    rc = await cmd_rewrite(store, backend, workers)
+    if rc:
+        return rc
+    return await cmd_topics(store, backend, workers)
 
 
 async def cmd_status(store: Store) -> int:
@@ -463,7 +581,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp_rw = sub.add_parser("rewrite", help="reformat article bodies into clean paragraphs")
     sp_rw.add_argument("--workers", type=int, default=None)
 
-    sp_ing = sub.add_parser("ingest", help="gather + summarize + rewrite (no PDF)")
+    sp_top = sub.add_parser(
+        "topics",
+        help="name the edition's topics and file every article into them")
+    sp_top.add_argument("--workers", type=int, default=None)
+
+    sp_ing = sub.add_parser(
+        "ingest", help="gather + summarize + rewrite + topics (no PDF)")
     sp_ing.add_argument("--workers", type=int, default=None)
 
     sp_ren = sub.add_parser("render", help="render the current edition PDF")
@@ -524,6 +648,8 @@ async def _main(argv: list[str] | None = None) -> int:
                 return await cmd_summarize(store, backend, workers)
             if cmd == "rewrite":
                 return await cmd_rewrite(store, backend, workers)
+            if cmd == "topics":
+                return await cmd_topics(store, backend, workers)
             if cmd == "ingest":
                 return await cmd_ingest(client, store, backend, sources, workers)
             if cmd == "render":

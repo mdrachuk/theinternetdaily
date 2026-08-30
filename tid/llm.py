@@ -40,6 +40,12 @@ class BatchLimits:
     `max_concurrent` is the app-side default for in-flight batches. For vLLM it
     should match `--max-num-seqs`: the server does its own continuous batching,
     so oversubscribing past that only queues.
+
+    The `topic_*` three size the one call in the pipeline that is not batched
+    per article but per *edition*: naming the day's topics needs every headline
+    in one prompt (see `tid.topics`), so `topic_max_articles` is where a 16k
+    context window is respected. Defaulted, because a downstream backend
+    written before this stage existed must keep constructing.
     """
     summarize_batch: int
     summarize_max_chars: int
@@ -49,6 +55,9 @@ class BatchLimits:
     rewrite_output_tokens: int
     max_concurrent: int
     max_output_tokens: int
+    topic_max_articles: int = 200
+    topic_summary_chars: int = 240
+    topic_output_tokens: int = 1024
 
 
 @dataclass
@@ -106,6 +115,11 @@ ANTHROPIC_LIMITS = BatchLimits(
     # 8 x 4096: Haiku's own output limit is far higher, so the ceiling only
     # exists to keep a mistake from turning into a 64k request.
     max_output_tokens=32768,
+    # ~200 headlines with a 240-char summary each is ~25k tokens — comfortable
+    # for a 200k window, and more articles than an edition has ever carried.
+    topic_max_articles=200,
+    topic_summary_chars=240,
+    topic_output_tokens=1024,
 )
 
 
@@ -184,6 +198,13 @@ VLLM_LIMITS = BatchLimits(
     rewrite_output_tokens=8192,
     max_concurrent=4,
     max_output_tokens=8192,
+    # The topic call is the only prompt that scales with the size of the whole
+    # edition. 60 x (headline + 160 chars) is ~5k tokens, which leaves room for
+    # the system prompt and the reply inside a 16k window. A bigger edition is
+    # named from its 60 newest stories rather than overflowing the model.
+    topic_max_articles=60,
+    topic_summary_chars=160,
+    topic_output_tokens=768,
 )
 
 
@@ -319,6 +340,9 @@ OLLAMA_LIMITS = BatchLimits(
     rewrite_output_tokens=6144,
     max_concurrent=1,
     max_output_tokens=6144,
+    topic_max_articles=40,
+    topic_summary_chars=160,
+    topic_output_tokens=768,
 )
 
 

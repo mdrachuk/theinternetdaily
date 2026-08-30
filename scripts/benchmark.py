@@ -21,6 +21,7 @@ from tid.cli import (
     cmd_gather,
     cmd_rewrite,
     cmd_summarize,
+    cmd_topics,
     collect_current_edition,
     gather_decorations,
 )
@@ -157,6 +158,13 @@ async def main() -> int:
             async with Stage("rewrite", backend.usage) as st:
                 await cmd_rewrite(store, backend, args.workers)
             rows.append(st.row(pending_rewrite))
+
+            # Counted before the stage runs, like the others: this is the set
+            # of articles the topic passes will read, file and rank.
+            pending_topics = len(await store.pending_render())
+            async with Stage("topics", backend.usage) as st:
+                await cmd_topics(store, backend, args.workers)
+            rows.append(st.row(pending_topics))
 
             articles = await collect_current_edition(store, sources)
             if not args.skip_render:

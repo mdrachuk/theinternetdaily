@@ -1,6 +1,6 @@
 """End-to-end pipeline test with no network, no GPU and no API key.
 
-gather → extract → summarize → rewrite → edition → LaTeX, with HTTP served by
+gather → extract → summarize → rewrite → topics → edition → LaTeX, with HTTP served by
 httpx.MockTransport and the LLM replaced by tid.testing.FakeBackend. This
 is the test that would have caught every signature break during the async and
 store migrations, and it is the one CI can always run.
@@ -17,6 +17,7 @@ import pytest
 
 from tid.cli import (
     cmd_gather,
+    cmd_ingest,
     cmd_rewrite,
     cmd_summarize,
     collect_current_edition,
@@ -195,6 +196,28 @@ async def test_json_backend_takes_the_same_path(pipeline):
     assert all(a["summary"] and "Rewritten paragraph" in a["text"]
                for a in articles)
     assert json_backend.calls[0]["json_schema"] is not None
+
+
+async def test_ingest_ends_with_the_edition_filed_into_topics(pipeline):
+    """The pipeline is gather → summarize → rewrite → topics, and the last one
+    is what decides the paper's sections: by the time ingest returns, every
+    article that will be in the next edition carries a topic and knows whether
+    it is one of that topic's main stories."""
+    from tid import edition as ed
+    from tid.testing import FAKE_TOPICS
+
+    client, store, backend = pipeline
+    assert await cmd_ingest(client, store, backend, SOURCES) == 0
+
+    articles = await collect_current_edition(store, SOURCES)
+    assert articles and all(a["topic"] in FAKE_TOPICS for a in articles)
+    assert any(a["main_rank"] == 0 for a in articles)
+
+    paper = ed.build(articles, key="k" * 24, date="2026-08-08", built_at="")
+    # The columns are the topics the model named, not the source's own name.
+    named = {s.name for s in paper.sections} | {s.name for s in paper.below}
+    assert named | {paper.lead.group} <= set(FAKE_TOPICS)
+    assert "Test Feed" not in named
 
 
 @pytest.mark.skipif(shutil.which("xelatex") is None, reason="needs xelatex")

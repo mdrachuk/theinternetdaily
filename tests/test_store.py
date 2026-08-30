@@ -117,6 +117,38 @@ async def test_set_summary_and_body_stamp_their_timestamps(store):
     assert row.summarized_at and row.rewritten_at
 
 
+# --- topics ---------------------------------------------------------------
+
+async def test_set_topic_files_an_article_into_an_edition(store):
+    aid = await _add(store, "filed", summary="s", body="b")
+    await store.set_topic(aid, "Chip Wars", 2, 0)
+    row = next(r for r in await store.unpublished("Src") if r.id == aid)
+    assert (row.topic, row.topic_order, row.main_rank) == ("Chip Wars", 2, 0)
+
+
+async def test_set_topic_defaults_to_filed_but_not_main(store):
+    aid = await _add(store, "not main", summary="s", body="b")
+    await store.set_topic(aid, "Chip Wars", 0)
+    row = next(r for r in await store.unpublished("Src") if r.id == aid)
+    assert row.topic == "Chip Wars" and row.main_rank is None
+
+
+async def test_set_topic_unfiles_rather_than_merging(store):
+    """The stage rewrites every row each edition. An article it cannot place
+    has to come back unfiled, or it keeps a section this paper never had."""
+    aid = await _add(store, "stale", summary="s", body="b")
+    await store.set_topic(aid, "Chip Wars", 0, 0)
+    await store.set_topic(aid, None, None, None)
+    row = next(r for r in await store.unpublished("Src") if r.id == aid)
+    assert (row.topic, row.topic_order, row.main_rank) == (None, None, None)
+
+
+async def test_an_unfiled_article_has_no_topic(store):
+    aid = await _add(store, "untouched", summary="s", body="b")
+    row = next(r for r in await store.unpublished("Src") if r.id == aid)
+    assert row.topic is None and row.topic_order is None
+
+
 # --- render ---------------------------------------------------------------
 
 async def test_unpublished_is_newest_first_and_uncapped(store):

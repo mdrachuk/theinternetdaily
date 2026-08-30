@@ -1,9 +1,14 @@
 # Add, remove, or reorder sources here.
 # kind        = "hn" | "rss"    how the source is fetched (Algolia / feedparser)
-# section     = "Science & Maths"   which front-page column the source files
-#                               under; sources sharing a section share a
-#                               column, and the first four sections get the
-#                               front page.
+# section     = "Science & Maths"   FALLBACK column. The paper's columns are
+#                               named per edition by the topics stage, which
+#                               reads the day's headlines and files each
+#                               article under the topic it is actually about.
+#                               This is only what an article falls back to
+#                               when that stage did not file it — or what the
+#                               whole paper falls back to on a day it could
+#                               not run. Sources sharing a section share a
+#                               column, and the first four get the front page.
 # medium      = "read"|"watch"|"listen"   what the reader does with it. Drives
 #                               the glyph in the byline and the
 #                               Read/Watch/Listen filter. Defaults to "read".
@@ -14,9 +19,11 @@
 # last sync is fetched, rewritten and given its own page; the edition is
 # bounded by when the previous one ended, not by a count.
 #
-# Order matters twice over: sections appear in the order their first source
-# does, and within a section the top article is the newest. Quality first,
-# social last.
+# Order matters for the fallback layout: sections appear in the order their
+# first source does, and within a section the top article is the newest. When
+# the topics stage has run, the columns are its topics instead, ordered by the
+# significance it gave them, and each column is led by the main stories it
+# picked. Quality first, social last.
 
 # World news (Wikipedia Current events) is rendered inline on page 1 from
 # decorations — NOT configured here as a regular article source.

@@ -32,7 +32,10 @@ CREATE TABLE IF NOT EXISTS article (
     summarized_at  TEXT,
     rewritten_at   TEXT,
     rendered_at    TEXT,              -- ISO date of first edition inclusion; NULL = pending
-    image          TEXT               -- lead image URL (feed enclosure or og:image)
+    image          TEXT,              -- lead image URL (feed enclosure or og:image)
+    topic          TEXT,              -- NULL until the topic stage files it
+    topic_order    INTEGER,           -- the topic's rank within its edition
+    main_rank      INTEGER            -- 0 = the topic's lead story; NULL = not main
 );
 CREATE INDEX IF NOT EXISTS idx_title_norm  ON article(title_norm);
 CREATE INDEX IF NOT EXISTS idx_rendered_at ON article(rendered_at);
@@ -42,17 +45,33 @@ CREATE INDEX IF NOT EXISTS idx_source_date ON article(source, published, surface
 _COLUMNS = (
     "url_hash", "url", "title", "title_norm", "source", "text", "body",
     "summary", "surfaced", "published", "fetched_at", "extracted_at",
-    "summarized_at", "rewritten_at", "rendered_at", "image",
+    "summarized_at", "rewritten_at", "rendered_at", "image", "topic",
+    "topic_order", "main_rank",
 )
 
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM article"
 
 
+# Columns added after the first release, with the type they are declared as.
+# SQLite is dynamically typed, so the declaration only matters for ordering
+# comparisons — which `topic_order` and `main_rank` are used for.
+_ADDED_COLUMNS = {
+    "body": "TEXT",
+    "rewritten_at": "TEXT",
+    "surfaced": "TEXT",
+    "published": "TEXT",
+    "image": "TEXT",
+    "topic": "TEXT",
+    "topic_order": "INTEGER",
+    "main_rank": "INTEGER",
+}
+
+
 def _migrate(con: sqlite3.Connection) -> None:
     cols = {r[1] for r in con.execute("PRAGMA table_info(article)")}
-    for name in ("body", "rewritten_at", "surfaced", "published", "image"):
+    for name, decl in _ADDED_COLUMNS.items():
         if name not in cols:
-            con.execute(f"ALTER TABLE article ADD COLUMN {name} TEXT")
+            con.execute(f"ALTER TABLE article ADD COLUMN {name} {decl}")
     con.commit()
 
 
@@ -74,6 +93,9 @@ def _row(r: sqlite3.Row) -> ArticleRow:
         rewritten_at=r["rewritten_at"],
         rendered_at=r["rendered_at"],
         image=r["image"],
+        topic=r["topic"],
+        topic_order=r["topic_order"],
+        main_rank=r["main_rank"],
     )
 
 
@@ -185,6 +207,26 @@ class SqliteStore:
 
     async def set_body(self, article_id: str, body: str) -> None:
         await self._set("body", "rewritten_at", article_id, body)
+
+    # --- topics ---------------------------------------------------------
+
+    async def set_topic(
+        self,
+        article_id: str,
+        topic: str | None,
+        topic_order: int | None = None,
+        main_rank: int | None = None,
+    ) -> None:
+        """File (or, with topic=None, unfile) one article. See store.base."""
+        def _w() -> None:
+            self.con.execute(
+                "UPDATE article SET topic = ?, topic_order = ?, main_rank = ? "
+                "WHERE url_hash = ?",
+                (topic, topic_order, main_rank, article_id),
+            )
+            self.con.commit()
+
+        await self._run(_w)
 
     async def _set(self, column: str, stamp: str, article_id: str, value: str) -> None:
         def _w() -> None:
@@ -341,14 +383,18 @@ class SqliteStore:
                     summarized_at = COALESCE(excluded.summarized_at, summarized_at),
                     rewritten_at  = COALESCE(excluded.rewritten_at, rewritten_at),
                     rendered_at   = COALESCE(excluded.rendered_at, rendered_at),
-                    image         = COALESCE(excluded.image, image)
+                    image         = COALESCE(excluded.image, image),
+                    topic         = COALESCE(excluded.topic, topic),
+                    topic_order   = COALESCE(excluded.topic_order, topic_order),
+                    main_rank     = COALESCE(excluded.main_rank, main_rank)
                 """,
                 [
                     (
                         r.id, r.url, r.title, r.title_norm, r.source, r.text,
                         r.body, r.summary, r.surfaced, r.published,
                         r.fetched_at, r.extracted_at, r.summarized_at,
-                        r.rewritten_at, r.rendered_at, r.image,
+                        r.rewritten_at, r.rendered_at, r.image, r.topic,
+                        r.topic_order, r.main_rank,
                     )
                     for r in rows
                 ],

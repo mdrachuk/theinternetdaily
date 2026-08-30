@@ -16,7 +16,8 @@ Routes:
   GET  /icon/{domain}.png   a cached source mark
   GET  /healthz             liveness probe
   GET  /readyz              readiness probe (store + config)
-  POST /ingest              manual kick, via the job queue
+  POST /ingest              manual kick, via the job queue (gather →
+                            summarize → rewrite → topics)
 
 Both edition routes take `?m=read|watch|listen` to show one medium only.
 
