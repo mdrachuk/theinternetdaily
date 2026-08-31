@@ -225,7 +225,17 @@ img { max-width: 100%; }
 .photo {
   display: block;
   width: 100%;
-  object-fit: cover;
+  /* The whole photograph, filling the column: it keeps its own proportions
+   * instead of being cropped to a house ratio, and the caps further down only
+   * stop a tall portrait from taking over the page. `contain` matters only in
+   * that case — a picture the cap has shrunk sits inside its box rather than
+   * being stretched to fill it. */
+  height: auto;
+  object-fit: contain;
+  /* `auto` first: the loaded picture's own ratio wins, and the 3:2 is only
+   * the shape of the hatched placeholder — without it an image still in
+   * flight is zero pixels tall and the page jumps when it lands. */
+  aspect-ratio: auto 3 / 2;
   background: repeating-linear-gradient(135deg,
     rgba(0, 0, 0, .055) 0 8px, rgba(0, 0, 0, .02) 8px 16px);
 }
@@ -260,7 +270,7 @@ img { max-width: 100%; }
 .lead-actions:focus-within { opacity: 1; }
 
 .lead-aside { display: flex; flex-direction: column; gap: 14px; }
-.lead-aside .photo { height: 150px; }
+.lead-aside .photo { max-height: 480px; }
 
 .lead-side {
   border-top: 1px solid var(--rule);
@@ -294,7 +304,7 @@ img { max-width: 100%; }
   padding-bottom: 5px;
 }
 
-.col .photo { height: 104px; }
+.col .photo { max-height: 340px; }
 .col-top .hlt { font-size: 20px; line-height: 1.13; font-weight: 700; }
 .col-top .dek { margin-top: 6px; font-size: 13.5px; line-height: 1.42; }
 .col-top .byline { margin-top: 6px; }
@@ -319,11 +329,11 @@ img { max-width: 100%; }
 
 .band-grid { display: grid; grid-template-columns: 1fr; gap: 22px; align-items: start; }
 
-/* The band's lead and its photograph, kept together in one track. The cap
- * matters where the track is the whole page — a solo band, or any band on a
- * phone — since a full-bleed 150px crop is a letterbox, not a picture. */
+/* The band's lead and its photograph, kept together in one track. The width
+ * cap matters where the track is the whole page — a solo band, or any band on
+ * a phone — since a picture printed across 1380px of newsprint is a poster. */
 .band-lead { display: flex; flex-direction: column; gap: 15px; }
-.band-lead .photo { height: 150px; max-width: 440px; }
+.band-lead .photo { max-height: 420px; max-width: 440px; }
 
 .band-top .byline { margin-bottom: 8px; }
 .band-top .hlt {
@@ -363,7 +373,7 @@ img { max-width: 100%; }
 .read h1 { margin: 14px 0 0; font-size: clamp(30px, 3vw, 42px); line-height: 1.06;
            font-weight: 700; letter-spacing: -.015em; text-wrap: pretty; }
 .read .dek { margin-top: 14px; font-size: 17px; line-height: 1.5; }
-.read .photo { height: auto; max-height: 380px; margin-top: 22px; }
+.read .photo { max-height: 620px; margin-top: 22px; }
 .read .text { margin-top: 26px; font-size: 17px; line-height: 1.62; color: var(--body); }
 .read .text p { margin: 0 0 1.05em; text-wrap: pretty; }
 .read .text pre { overflow-x: auto; font-size: 14px; line-height: 1.45;
@@ -457,7 +467,7 @@ img { max-width: 100%; }
 .drawer-body { padding: 24px 26px 34px; }
 .drawer-body h2 { margin: 0; font-size: 30px; line-height: 1.09; font-weight: 700;
                   letter-spacing: -.015em; text-wrap: pretty; }
-.drawer-body .photo { height: 170px; margin-top: 18px; }
+.drawer-body .photo { max-height: 440px; margin-top: 18px; }
 .drawer-body .dek { margin-top: 18px; font-size: 16px; line-height: 1.55; }
 .drawer-body .excerpt { margin-top: 14px; font-size: 16px; line-height: 1.55; color: var(--body); }
 .drawer-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px;
