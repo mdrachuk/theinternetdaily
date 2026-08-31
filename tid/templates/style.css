@@ -319,6 +319,12 @@ img { max-width: 100%; }
 
 .band-grid { display: grid; grid-template-columns: 1fr; gap: 22px; align-items: start; }
 
+/* The band's lead and its photograph, kept together in one track. The cap
+ * matters where the track is the whole page — a solo band, or any band on a
+ * phone — since a full-bleed 150px crop is a letterbox, not a picture. */
+.band-lead { display: flex; flex-direction: column; gap: 15px; }
+.band-lead .photo { height: 150px; max-width: 440px; }
+
 .band-top .byline { margin-bottom: 8px; }
 .band-top .hlt {
   font-size: clamp(24px, 2.25vw, 31px);
@@ -344,7 +350,6 @@ img { max-width: 100%; }
 .stacks .hl:first-child { border-top: 0; padding-top: 0; }
 .stacks .hlt { font-size: 17.5px; line-height: 1.16; font-weight: 700; }
 .stacks .byline { margin-top: 5px; }
-.stacks .photo { height: 122px; break-inside: avoid; margin-bottom: 15px; }
 
 /* --- the empty paper ---------------------------------------------------- */
 

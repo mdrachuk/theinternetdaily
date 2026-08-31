@@ -305,6 +305,9 @@ def build(
             sections.append(Section(name=name, top=top, rest=rest, image=image))
             rows = rows[1 + FRONT_REST:]
         if rows:
+            # The band's photograph is its top story's, and the page prints the
+            # two together. Any other article's would be a picture with no
+            # caption sitting under somebody else's headline.
             below.append(Section(
                 name=name, top=rows[0], rest=rows[1:],
                 image=rows[0].image,

@@ -169,6 +169,28 @@ def test_rendered_edition_carries_the_headlines_and_the_deks():
     assert f"/e/{e.key}/a/{e.lead.id}" in html, "preview must link to the text"
 
 
+def test_a_bands_photograph_is_printed_with_the_story_it_belongs_to():
+    """A band's picture is its top story's. Printed at the end of the stacked
+    headlines it flowed to the foot of the last column and read as belonging to
+    whatever story ended up above it."""
+    arts = [article(i, section=f"S{i % 6}",
+                    image=f"https://img.test/{i}.jpg" if i % 6 == 5 else None)
+            for i in range(30)]
+    e = build(arts)
+    banded = [s for s in e.below if s.image]
+    assert banded, "nothing below the fold to check"
+    assert all(s.image == s.top.image for s in banded)
+
+    bands = [b.partition("</section>")[0]
+             for b in site.render_edition(e).split('<section class="band">')[1:]]
+    shown = [b for b in bands if 'class="photo"' in b]
+    assert len(shown) == len(banded)
+    for band, html in zip(banded, shown):
+        head, _, stacked = html.partition('class="stacks"')
+        assert band.image in head, "the photo belongs beside its own headline"
+        assert 'class="photo"' not in stacked
+
+
 def test_headline_text_is_escaped_not_injected():
     nasty = dict(article(0), title="<script>alert(1)</script>",
                  summary="a & b <b>")
