@@ -40,16 +40,36 @@ class RawItem:
 _IMG_IN_HTML = re.compile(r'<img[^>]+src=["\']([^"\']+)', re.I)
 
 
+def _media_width(media: dict) -> int:
+    """The pixel width a media element advertises, or 0 when it names none."""
+    try:
+        return int(str(media.get("width") or "").strip() or 0)
+    except ValueError:
+        return 0
+
+
 def _entry_image(entry) -> str | None:
-    """The best image URL a feed entry offers, or None."""
-    for thumb in getattr(entry, "media_thumbnail", None) or ():
-        if isinstance(thumb, dict) and thumb.get("url"):
-            return thumb["url"]
-    for media in getattr(entry, "media_content", None) or ():
-        if not isinstance(media, dict):
+    """The best image URL a feed entry offers, or None.
+
+    A feed that publishes one photograph at several sizes lists the smallest
+    first — the Guardian advertises 140, 460 and 700px variants of the same
+    picture — so taking the first one printed a thumbnail. The widest
+    advertised variant wins instead; feed order only decides between elements
+    that name no width at all.
+    """
+    best: str | None = None
+    best_width = -1
+    for media in list(getattr(entry, "media_thumbnail", None) or ()) \
+            + list(getattr(entry, "media_content", None) or ()):
+        if not isinstance(media, dict) or not media.get("url"):
             continue
-        if media.get("url") and str(media.get("medium", "image")) == "image":
-            return media["url"]
+        if str(media.get("medium", "image")) != "image":
+            continue
+        width = _media_width(media)
+        if width > best_width:
+            best, best_width = media["url"], width
+    if best:
+        return best
     for enc in getattr(entry, "enclosures", None) or ():
         href = enc.get("href") if isinstance(enc, dict) else None
         if href and str(enc.get("type", "")).startswith("image/"):

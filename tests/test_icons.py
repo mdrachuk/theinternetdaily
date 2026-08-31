@@ -122,6 +122,33 @@ def test_media_thumbnail_wins():
     assert _entry_image(entry) == "http://x.test/thumb.jpg"
 
 
+def test_the_widest_advertised_variant_wins():
+    """The Guardian offers one photograph at three sizes, smallest first.
+    Feed order would print the 140px thumbnail."""
+    entry = _entry(
+        '<media:content width="140" url="http://x.test/140.jpg"/>'
+        '<media:content width="460" url="http://x.test/460.jpg"/>'
+        '<media:content width="700" url="http://x.test/700.jpg"/>'
+    )
+    assert _entry_image(entry) == "http://x.test/700.jpg"
+
+
+def test_a_wider_media_content_beats_a_widthless_thumbnail():
+    entry = _entry(
+        '<media:thumbnail url="http://x.test/thumb.jpg"/>'
+        '<media:content width="700" url="http://x.test/700.jpg"/>'
+    )
+    assert _entry_image(entry) == "http://x.test/700.jpg"
+
+
+def test_a_video_enclosed_as_media_content_is_not_an_image():
+    entry = _entry(
+        '<media:content medium="video" width="1920" url="http://x.test/a.mp4"/>'
+        '<media:content width="700" url="http://x.test/700.jpg"/>'
+    )
+    assert _entry_image(entry) == "http://x.test/700.jpg"
+
+
 def test_an_image_enclosure_is_used():
     entry = _entry('<enclosure url="http://x.test/a.jpg" type="image/jpeg"/>')
     assert _entry_image(entry) == "http://x.test/a.jpg"
