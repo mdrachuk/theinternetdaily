@@ -59,12 +59,17 @@
     {%- for sec in edition.below %}
     <section class="band">
       <h2>{{ sec.name }}</h2>
-      <div class="band-grid{% if not (sec.rest or sec.image) %} solo{% endif %}">
-        {{ headline(sec.top, edition.key, cls="band-top", tag="h3", dek=True, top=True) }}
-        {%- if sec.rest or sec.image %}
+      <div class="band-grid{% if not sec.rest %} solo{% endif %}">
+        {#- The photograph belongs to the top story, so it is printed with it.
+            Loose in the grid it would claim a track of its own; loose in
+            `.stacks` it flowed to the foot of a column under another story. #}
+        <div class="band-lead">
+          {{ headline(sec.top, edition.key, cls="band-top", tag="h3", dek=True, top=True) }}
+          {%- if sec.image %}{{ photo(sec.image) }}{% endif %}
+        </div>
+        {%- if sec.rest %}
         <div class="stacks">
           {%- for it in sec.rest %}{{ headline(it, edition.key) }}{% endfor %}
-          {%- if sec.image %}{{ photo(sec.image) }}{% endif %}
         </div>
         {%- endif %}
       </div>
