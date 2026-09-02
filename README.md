@@ -800,7 +800,11 @@ inlined into every page.
   window is sized for 900px rather than rounded down to the tablet.
 - The columns below the fold are real CSS `columns` with a `column-rule`, not
   a server-side split: how many fit is a viewport question, and the server
-  does not get to know the viewport.
+  does not get to know the viewport. The stories are ruled off from each
+  other, and since a column break can hand any of them the top of a column,
+  the top edge of the stack is covered by a strip of paper (`.stacks::before`)
+  rather than by `:first-child` — which the markup only ever gets right for
+  the first column. Change `--paper` and that strip follows it.
 
 The three pages are `edition.html`, `article.html` and `sources.html`, with the
 shared headline and byline markup in `_macros.html`. If you want the *PDF*
