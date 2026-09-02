@@ -348,7 +348,13 @@ img { max-width: 100%; }
 /* The stacked columns beside a band's lead. CSS columns rather than server-side
  * distribution: the count is a viewport question, and the server does not get
  * to know the viewport. */
-.stacks { columns: 1; column-gap: 30px; column-rule: 1px solid var(--rule); }
+.stacks {
+  columns: 1;
+  column-gap: 30px;
+  column-rule: 1px solid var(--rule);
+  position: relative;
+  margin-top: -13px;
+}
 
 .stacks .hl {
   break-inside: avoid;
@@ -357,7 +363,27 @@ img { max-width: 100%; }
   margin-bottom: 15px;
 }
 
-.stacks .hl:first-child { border-top: 0; padding-top: 0; }
+/* A column break hands the top of column 2 a story the DOM calls a middle
+ * child, so :first-child cannot lift the hairline off it and the rule was
+ * printed over open paper. Lay a strip of paper a rule and its air deep along
+ * the top edge instead: it covers the first story of every column, whatever
+ * the count, and trims the column rules to start at the first line. The box is
+ * pulled up by that same 13px, so the strip lands on the blank margin above
+ * and the stories still begin exactly where they used to. */
+.stacks::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 13px;
+  background: var(--paper);
+}
+
+/* The one story the DOM does know is first keeps its hairline off outright,
+ * so it reads correctly on a printer that declines to ink backgrounds. It
+ * spends the rule's pixel on padding instead: every column then opens on the
+ * same line, and the strip stops on air rather than on type. */
+.stacks .hl:first-child { border-top: 0; padding-top: 13px; }
+
 .stacks .hlt { font-size: 17.5px; line-height: 1.16; font-weight: 700; }
 .stacks .byline { margin-top: 5px; }
 
