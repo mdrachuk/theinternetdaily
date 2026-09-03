@@ -54,6 +54,58 @@ async def test_unknown_article_does_not_exist(store):
     assert not await store.exists("http://example.invalid/nope", "nope")
 
 
+async def test_exists_without_a_title_matches_the_url_only(store):
+    await _add(store, "Hello World")
+    assert await store.exists("http://example.invalid/Hello World")
+    assert not await store.exists("http://other.invalid/x")
+
+
+async def test_exists_matches_a_cyrillic_title_from_another_url(store):
+    await _add(store, "Путин подписал закон")
+    assert await store.exists("http://other.invalid/x", "Путин подписал закон!")
+    assert not await store.exists("http://other.invalid/x", "Путин отменил закон")
+
+
+async def test_opening_a_store_renormalizes_titles_stored_under_the_old_rule(tmp_path):
+    """Rows written by the ASCII-only normalizer hold "" or a Latin fragment
+    in title_norm. Opening the store brings them up to date, so they neither
+    swallow new arrivals nor escape a real duplicate check."""
+    import sqlite3
+    path = tmp_path / "state.db"
+    s = SqliteStore(path)
+    await s.close()
+    con = sqlite3.connect(path)
+    con.execute(
+        "INSERT INTO article (url_hash, url, title, title_norm, source, fetched_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        ("h1", "http://a.invalid/1", "HBO покажет сериал", "hbo", "Src", "2026-01-01"),
+    )
+    con.execute(
+        "INSERT INTO article (url_hash, url, title, title_norm, source, fetched_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        ("h2", "http://a.invalid/2", "Суд арестовал журналиста", "", "Src", "2026-01-01"),
+    )
+    con.commit(); con.close()
+
+    s = SqliteStore(path)
+    try:
+        rows = {r.id: r for r in await s.all_rows()}
+        assert rows["h1"].title_norm == "hbo покажет сериал"
+        assert rows["h2"].title_norm == "суд арестовал журналиста"
+        assert not await s.exists("http://b.invalid/x", "HBO")
+        assert await s.exists("http://b.invalid/x", "Суд арестовал журналиста")
+    finally:
+        await s.close()
+
+
+async def test_an_empty_normalized_title_never_matches(store):
+    """A title of only punctuation normalizes to "". Two such rows are not
+    the same story, and neither is a row with a real title."""
+    await _add(store, "— … —")
+    assert not await store.exists("http://other.invalid/x", "***")
+    assert not await store.exists("http://other.invalid/y", "")
+
+
 async def test_insert_is_idempotent(store):
     await _add(store, "dup")
     await _add(store, "dup")

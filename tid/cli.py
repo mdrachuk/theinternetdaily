@@ -17,7 +17,7 @@ from .fetch import RawItem, fetch_hn, fetch_rss, fetch_wikipedia_events
 from .http import client_context
 from .llm import LLMBackend, make_backend
 from .render import build_pdf
-from .store import ArticleRow, Store, open_store
+from .store import ArticleRow, Store, norm_title, open_store
 from .topics import Topic, propose_topics, select_main, select_topic, standing_topics
 from .wiki import (
     fetch_did_you_know,
@@ -88,6 +88,7 @@ async def cmd_gather(
 ) -> int:
     new_count = 0
     failed_count = 0
+    dup_count = 0
     sem = asyncio.Semaphore(concurrency)
 
     async def _extract_one(it: RawItem):
@@ -101,15 +102,27 @@ async def cmd_gather(
             continue
 
         todo: list[RawItem] = []
+        seen_here: set[str] = set()
         for it in items:
-            if await store.exists(it.url, it.title):
-                # Back-fill the surfacing date on a re-gather, even if the
-                # row already exists.
+            if await store.exists(it.url):
+                # Back-fill the surfacing date on a re-gather. insert_raw is
+                # a no-op insert for a URL we hold, plus the date fill.
                 await store.insert_raw(
                     it.source, it.url, it.title,
                     text=None, surfaced=it.surfaced, image=it.image,
                 )
                 continue
+            norm = norm_title(it.title)
+            if norm in seen_here or await store.exists(it.url, it.title):
+                # The same story under another URL. Skip it outright: the
+                # old code ran the back-fill insert here too, which filed a
+                # textless row under the *new* URL — a story that never
+                # reached extraction and never counted as unreadable.
+                dup_count += 1
+                _log(f"  = {it.title[:70]}  (already have this story)")
+                continue
+            if norm:
+                seen_here.add(norm)
             todo.append(it)
 
         results = await asyncio.gather(
@@ -147,7 +160,8 @@ async def cmd_gather(
                 )
                 new_count += 1
                 _log(f"  + {it.title[:70]}  ({len(art.text)} chars)")
-    _log(f"[gather] +{new_count} new, {failed_count} unreadable")
+    _log(f"[gather] +{new_count} new, {failed_count} unreadable, "
+         f"{dup_count} duplicate")
     return 0
 
 

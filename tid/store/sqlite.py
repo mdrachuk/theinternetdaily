@@ -72,6 +72,19 @@ def _migrate(con: sqlite3.Connection) -> None:
     for name, decl in _ADDED_COLUMNS.items():
         if name not in cols:
             con.execute(f"ALTER TABLE article ADD COLUMN {name} {decl}")
+    # Re-normalize titles stored under an older `norm_title`. The ASCII-only
+    # version left every non-Latin headline as "" or a stray Latin word, and
+    # those stale values would keep matching (or missing) new arrivals. One
+    # pass, idempotent: the second open finds nothing to change.
+    stale = [
+        (norm, h) for h, title, stored in
+        con.execute("SELECT url_hash, title, title_norm FROM article")
+        if (norm := norm_title(title)) != stored
+    ]
+    if stale:
+        con.executemany(
+            "UPDATE article SET title_norm = ? WHERE url_hash = ?", stale
+        )
     con.commit()
 
 
@@ -126,12 +139,20 @@ class SqliteStore:
 
     # --- gather ---------------------------------------------------------
 
-    async def exists(self, url: str, title: str) -> bool:
+    async def exists(self, url: str, title: str | None = None) -> bool:
+        norm = norm_title(title) if title else ""
+
         def _q() -> bool:
-            cur = self.con.execute(
-                "SELECT 1 FROM article WHERE url_hash = ? OR title_norm = ? LIMIT 1",
-                (url_hash(url), norm_title(title)),
-            )
+            if norm:
+                cur = self.con.execute(
+                    "SELECT 1 FROM article WHERE url_hash = ? OR title_norm = ? LIMIT 1",
+                    (url_hash(url), norm),
+                )
+            else:
+                cur = self.con.execute(
+                    "SELECT 1 FROM article WHERE url_hash = ? LIMIT 1",
+                    (url_hash(url),),
+                )
             return cur.fetchone() is not None
 
         return await self._run(_q)
