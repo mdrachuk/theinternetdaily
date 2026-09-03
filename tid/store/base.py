@@ -11,7 +11,7 @@ SQLite is the default and needs no extra services. Mongo lives in
 from __future__ import annotations
 
 import hashlib
-import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol, runtime_checkable
@@ -23,8 +23,21 @@ def url_hash(url: str) -> str:
 
 
 def norm_title(title: str) -> str:
-    """Normalized title, used for cross-source duplicate detection."""
-    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    """Normalized title, used for cross-source duplicate detection.
+
+    Keeps every letter and digit of every script, case-folded, and collapses
+    everything else (punctuation, quotes, dashes, whitespace) to a single
+    space. NFKC first, so a full-width digit or a ligature compares equal to
+    its plain form. The previous `[^a-z0-9]` version threw away all
+    non-ASCII, so a Cyrillic headline normalized to "" or to whatever Latin
+    word or number it happened to contain, and one such row made every later
+    headline from that source look like a duplicate.
+
+    Can still come back empty (a title of nothing but punctuation); the
+    stores never treat an empty normalized title as a match.
+    """
+    folded = unicodedata.normalize("NFKC", title).casefold()
+    return " ".join("".join(c if c.isalnum() else " " for c in folded).split())
 
 
 def now_iso() -> str:
@@ -101,7 +114,11 @@ class Store(Protocol):
     """
 
     # --- gather ---------------------------------------------------------
-    async def exists(self, url: str, title: str) -> bool: ...
+    async def exists(self, url: str, title: str | None = None) -> bool:
+        """Is this URL already stored — or, given a title, is any URL whose
+        normalized title matches? An empty normalized title matches nothing:
+        it says the title carried no letters, not that two stories agree."""
+        ...
 
     async def insert_raw(
         self,

@@ -106,12 +106,13 @@ class MongoStore:
 
     # --- gather ---------------------------------------------------------
 
-    async def exists(self, url: str, title: str) -> bool:
+    async def exists(self, url: str, title: str | None = None) -> bool:
         await self.ensure_indexes()
-        doc = await self.col.find_one(
-            {"$or": [{"_id": url_hash(url)}, {"title_norm": norm_title(title)}]},
-            {"_id": 1},
-        )
+        norm = norm_title(title) if title else ""
+        query: dict = {"_id": url_hash(url)}
+        if norm:
+            query = {"$or": [query, {"title_norm": norm}]}
+        doc = await self.col.find_one(query, {"_id": 1})
         return doc is not None
 
     async def insert_raw(
