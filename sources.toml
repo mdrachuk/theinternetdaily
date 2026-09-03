@@ -28,6 +28,38 @@
 # World news (Wikipedia Current events) is rendered inline on page 1 from
 # decorations — NOT configured here as a regular article source.
 
+# --- Standing sections ---------------------------------------------------
+# The topics stage names the paper's sections per edition by reading the
+# day's headlines. The `[[topic]]` tables below are the sections it starts
+# from: every edition's topic set contains all of them, and the stage adds the
+# day's own topics on top — a story cluster the standing sections do not cover,
+# or one big enough to demand a head of its own. An article is filed under the
+# MOST SPECIFIC topic, so a standing "World" still yields a "Ukraine" column on
+# a day the war dominates; a standing section nothing was filed under simply
+# has no column that day. `blurb` is for the editor filing the stories, not
+# for the reader: say what belongs in the section. Delete every [[topic]] to
+# let the stage name all of the sections itself.
+
+[[topic]]
+name = "Ukraine & War"
+blurb = "the war in Ukraine, its front, its diplomacy, and other wars"
+
+[[topic]]
+name = "russia"
+blurb = "Russian politics, society, repression and the economy at home"
+
+[[topic]]
+name = "UK"
+blurb = "British politics, society and news from the United Kingdom"
+
+[[topic]]
+name = "Apple"
+blurb = "Apple hardware, software and the ecosystem around it"
+
+[[topic]]
+name = "LLMs & AI"
+blurb = "language models, AI research, and the industry around them"
+
 # --- Math / Science ------------------------------------------------------
 
 [[source]]

@@ -145,6 +145,7 @@ def _stubbed_ingest():
         ),
         mock.patch.object(jobs, "warm_icons", new=mock.AsyncMock(return_value=0)),
         mock.patch.object(jobs.config, "load_sources", return_value=[]),
+        mock.patch.object(jobs.config, "load_topics", return_value=[]),
         mock.patch.object(jobs, "open_store", return_value=mock.AsyncMock()),
         mock.patch.object(jobs, "current_key", new=mock.AsyncMock(return_value="k")),
     )

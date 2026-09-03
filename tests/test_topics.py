@@ -77,6 +77,108 @@ def test_the_topic_set_is_capped():
     assert len(tp.parse_topics(reply)) == tp.MAX_TOPICS
 
 
+# --- standing sections ----------------------------------------------------
+
+STANDING = [tp.Topic("World", "international news"),
+            tp.Topic("Science & Maths", "research and mathematics"),
+            tp.Topic("Apple", "")]
+
+
+def test_standing_topics_come_from_the_config_tables(tmp_path):
+    cfg = tmp_path / "sources.toml"
+    cfg.write_text(
+        '[[topic]]\nname = "World"\nblurb = "international news"\n'
+        '[[topic]]\nname = "  Science   &  Maths "\n'
+        '[[source]]\nname = "Feed"\nsection = "S"\n'
+    )
+    from tid import config
+    got = tp.standing_topics(config.load_topics(cfg))
+    assert got == [tp.Topic("World", "international news"),
+                   tp.Topic("Science & Maths", "")]
+    assert config.load_sources(cfg) == [{"name": "Feed", "section": "S"}]
+
+
+def test_a_config_without_topics_has_no_standing_sections(tmp_path):
+    cfg = tmp_path / "sources.toml"
+    cfg.write_text('[[source]]\nname = "Feed"\n')
+    from tid import config
+    assert tp.standing_topics(config.load_topics(cfg)) == []
+
+
+def test_a_standing_topic_needs_a_name():
+    with pytest.raises(ValueError):
+        tp.standing_topics([{"blurb": "no name"}])
+
+
+def test_repeated_standing_topics_collapse():
+    got = tp.standing_topics([{"name": "World"}, {"name": "world"}])
+    assert got == [tp.Topic("World")]
+
+
+def test_the_merge_keeps_the_models_order_and_restores_the_config_names():
+    """The model ranks; the config spells. A standing section it named is the
+    configured one — name and blurb — wherever it put it."""
+    proposed = [tp.Topic("Chip Wars", "fabs"),
+                tp.Topic("world", "the model's own blurb"),
+                tp.Topic("apple", "the model's blurb, kept: the config has none")]
+    got = tp.merge_topics(proposed, STANDING)
+    assert got == [
+        tp.Topic("Chip Wars", "fabs"),
+        tp.Topic("World", "international news"),
+        tp.Topic("Apple", "the model's blurb, kept: the config has none"),
+        tp.Topic("Science & Maths", "research and mathematics"),
+    ], "and the one the model forgot is appended, not lost"
+
+
+def test_the_merge_caps_the_days_own_topics_but_never_a_standing_one():
+    standing = [tp.Topic(f"Standing {i}") for i in range(tp.MAX_TOPICS)]
+    proposed = [tp.Topic(f"Own {i}") for i in range(6)] + standing[:2]
+    got = tp.merge_topics(proposed, standing)
+    own = [t for t in got if t.name.startswith("Own")]
+    assert len(own) == tp.MIN_OWN_TOPICS, (
+        "a full page of standing sections still leaves room for a couple of "
+        "the day's own"
+    )
+    assert [t for t in got if t.name.startswith("Standing")] == standing[:2] + standing[2:]
+
+
+def test_how_many_topics_of_its_own_an_edition_may_add():
+    assert tp.own_topic_cap(0) == tp.MAX_TOPICS
+    assert tp.own_topic_cap(3) == tp.MAX_TOPICS - 3
+    assert tp.own_topic_cap(tp.MAX_TOPICS + 4) == tp.MIN_OWN_TOPICS
+
+
+@pytest.mark.parametrize("supports_json", [False, True])
+async def test_the_naming_call_is_shown_the_standing_sections(supports_json):
+    backend = FakeBackend(supports_json=supports_json)
+    got = await tp.propose_topics(
+        backend, [("A headline", "a summary")], STANDING
+    )
+    (call,) = backend.calls
+    assert "<standing>" in call["user"]
+    assert "<topic>World — international news</topic>" in call["user"]
+    assert "STANDING sections" in call["system"]
+    assert f"at most {tp.own_topic_cap(3)} topics of the day's own" in call["system"]
+    # The fake names its two topics; the config's three are still all there.
+    assert [t.name for t in got] == [*FAKE_TOPICS, "World", "Science & Maths", "Apple"]
+
+
+async def test_without_standing_sections_the_prompt_is_unchanged():
+    backend = FakeBackend()
+    await tp.propose_topics(backend, [("A headline", "a summary")])
+    (call,) = backend.calls
+    assert "<standing>" not in call["user"]
+    assert "STANDING" not in call["system"]
+    assert f"between {tp.MIN_TOPICS} and {tp.MAX_TOPICS} topics" in call["system"]
+
+
+async def test_a_failed_naming_call_is_not_rescued_by_the_config():
+    """No usable topics still turns the stage off. Filing the day into standing
+    sections by a model that could not read it is not what the editor asked."""
+    refuser = FakeBackend(respond=lambda system, user: "I cannot help.")
+    assert await tp.propose_topics(refuser, [("A", "b")], STANDING) == []
+
+
 # --- parsing one article's filing ----------------------------------------
 
 @pytest.mark.parametrize("reply", [
@@ -190,6 +292,43 @@ async def test_each_topic_gets_main_stories_ranked_from_zero(tmp_path):
         group = [r for r in rows if r.topic == topic]
         ranks = sorted(r.main_rank for r in group if r.main_rank is not None)
         assert ranks == list(range(tp.mains_for(len(group))))
+
+
+async def test_every_standing_section_can_be_filed_into(tmp_path):
+    """The point of configuring them: whatever the model names, the filing
+    pass is offered every standing section, and the rows land under the
+    configured names."""
+    store = await _seeded_store(tmp_path, n=12)
+    backend = FakeBackend()
+    try:
+        assert await cmd_topics(store, backend, standing=STANDING) == 0
+        rows = await store.pending_render()
+    finally:
+        await store.close()
+    label_calls = [c for c in backend.calls if "<headline>" in c["user"]]
+    assert label_calls
+    for c in label_calls:
+        for t in STANDING:
+            assert f"<topic>{t.line()}</topic>" in c["user"]
+    names = {r.topic for r in rows}
+    assert names <= set(FAKE_TOPICS) | {t.name for t in STANDING}
+    # The fake spreads filings across the whole list, so a standing section
+    # actually receives articles — proof the enum was the merged set.
+    assert names & {t.name for t in STANDING}
+    orders = {r.topic: r.topic_order for r in rows}
+    assert orders[FAKE_TOPICS[0]] == 0, "the model's ranking is still the order"
+
+
+async def test_the_cli_reads_standing_sections_from_the_config(tmp_path):
+    """`tid topics --config` picks the standing sections up from the same file
+    as the sources."""
+    from tid.cli import _load_topics
+    cfg = tmp_path / "sources.toml"
+    cfg.write_text(
+        '[[topic]]\nname = "World"\nblurb = "abroad"\n'
+        '[[source]]\nname = "Feed"\nsection = "S"\n'
+    )
+    assert _load_topics(cfg) == [tp.Topic("World", "abroad")]
 
 
 async def test_one_call_names_the_topics_then_one_per_article(tmp_path):

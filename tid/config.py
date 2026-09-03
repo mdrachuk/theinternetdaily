@@ -57,6 +57,17 @@ def load_sources(path: Path | None = None) -> list[dict]:
         return tomllib.load(f).get("source", [])
 
 
+def load_topics(path: Path | None = None) -> list[dict]:
+    """The paper's standing sections: the `[[topic]]` tables of the config.
+
+    Raw dicts, like `load_sources`; `tid.topics.standing_topics` turns them
+    into `Topic`s and validates them. A config with no `[[topic]]` at all is
+    fine — the topic stage then names every section itself, as it always did.
+    """
+    with open(path or config_path(), "rb") as f:
+        return tomllib.load(f).get("topic", [])
+
+
 def post_ingest_hook() -> str:
     return os.environ.get("POST_INGEST_HOOK", "").strip()
 
