@@ -15,6 +15,15 @@ So the sections are derived per edition, in three passes:
      paper, and an article-at-a-time process cannot make it (it would invent a
      new topic for every story and never notice that two of them are the same).
 
+     The editor can give the paper STANDING sections — `[[topic]]` tables in
+     `sources.toml`, see `standing_topics`. Those are the baseline of every
+     edition's topic set: the model is shown them, ranks them among the rest,
+     and adds the day's own topics on top for what they do not cover. Whatever
+     it answers, `merge_topics` guarantees every standing section is in the
+     final set under its configured name, so the filing pass can always choose
+     it; a standing section nothing was filed under simply has no column that
+     day.
+
   2. `select_topic` — one call per article, carrying that article and the whole
      topic list, choosing the single most specific topic it belongs to.
      Deliberately not batched: the choice is per-article, and a batch makes the
@@ -38,7 +47,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 from .llm import LLMBackend
 # The one piece of the batch protocol these calls share: finding the JSON
@@ -50,6 +59,12 @@ from .protocol import _outermost_object as _json_blob
 # eight the paper reads as an index rather than as sections.
 MIN_TOPICS = 3
 MAX_TOPICS = 8
+
+# How many topics of the day's own the model may add on top of the standing
+# sections. Normally whatever room MAX_TOPICS leaves; but a paper whose standing
+# sections already fill the page still gets a couple, because a section the
+# editor did not foresee is the whole point of naming topics per edition.
+MIN_OWN_TOPICS = 2
 
 # Output budgets for the two small calls. A topic name is a handful of tokens
 # and a main-selection is a short list of integers, so these are generous
@@ -68,6 +83,73 @@ class Topic:
         return f"{self.name} — {self.blurb}" if self.blurb else self.name
 
 
+def standing_topics(raw: Iterable[dict]) -> list[Topic]:
+    """The configured standing sections, as `Topic`s.
+
+    `raw` is what `tid.config.load_topics` returns: one dict per `[[topic]]`
+    table, `name` required, `blurb` optional. A configured name is the
+    editor's word and is taken as written (whitespace collapsed), not put
+    through `_clean_name`: that filter exists to catch a model explaining
+    itself, not to second-guess a section head someone typed on purpose.
+    Repeats collapse case-insensitively, keeping the first.
+    """
+    topics: list[Topic] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError(f"[[topic]] entries must be tables, got {item!r}")
+        name = re.sub(r"\s+", " ", str(item.get("name") or "")).strip()
+        if not name:
+            raise ValueError(f"[[topic]] without a name: {item!r}")
+        topics.append(Topic(name, str(item.get("blurb") or "").strip()))
+    return _dedupe(topics)
+
+
+def own_topic_cap(standing_count: int) -> int:
+    """How many topics of its own an edition may add to `standing_count`
+    standing sections."""
+    return max(MAX_TOPICS - standing_count, MIN_OWN_TOPICS)
+
+
+def merge_topics(
+    proposed: Sequence[Topic], standing: Sequence[Topic]
+) -> list[Topic]:
+    """The edition's topic set: what the model named, made to honour the
+    standing sections.
+
+    The model's order is kept — it ranked by significance, and a standing
+    section it put first carries the day's lead. A standing section it named
+    is restored to its configured spelling, and keeps its configured blurb
+    where there is one (the blurb is the editor's definition of the section;
+    the model's is only a guess at it). One it left out is appended, in
+    config order: it belongs in the filing list whether or not the model
+    remembered it, and the end is where a section with no stories to speak of
+    belongs. The day's own topics are capped at `own_topic_cap`, so a chatty
+    model cannot push the paper past the size of a paper.
+    """
+    by_key = {t.name.casefold(): t for t in standing}
+    cap = own_topic_cap(len(standing))
+    out: list[Topic] = []
+    seen: set[str] = set()
+    own = 0
+    for t in proposed:
+        key = t.name.casefold()
+        if key in seen:
+            continue
+        fixed = by_key.get(key)
+        if fixed is not None:
+            out.append(Topic(fixed.name, fixed.blurb or t.blurb))
+            seen.add(key)
+        elif own < cap:
+            out.append(t)
+            seen.add(key)
+            own += 1
+    for t in standing:
+        if t.name.casefold() not in seen:
+            out.append(t)
+            seen.add(t.name.casefold())
+    return out
+
+
 def mains_for(n: int) -> int:
     """How many of a topic's `n` articles are main ones.
 
@@ -80,15 +162,32 @@ def mains_for(n: int) -> int:
 
 # --- 1. the topic set -----------------------------------------------------
 
+_RULE_SIZE = (
+    f"- Name between {MIN_TOPICS} and {MAX_TOPICS} topics. Fewer is better "
+    "than padding: only name a topic that several stories actually belong to, "
+    "or that one very significant story demands.\n"
+)
+
+# The same rule when the paper has standing sections. `{cap}` is filled per
+# call: how many topics of the day's own there is room for.
+_RULE_SIZE_STANDING = (
+    "- The paper has STANDING sections, listed in <standing>. Every one of "
+    "them is in today's topic set: repeat each, with its name copied exactly, "
+    "placed wherever it belongs in the order of significance.\n"
+    "- Then add at most {cap} topics of the day's own. Fewer is better than "
+    "padding: add one only where several stories cluster on a subject that "
+    "deserves its own section head — inside a standing section's territory "
+    "or outside it — or where one very significant story demands it. Never "
+    "add a topic that merely renames a standing section.\n"
+)
+
 _SYSTEM_TOPICS = (
     "You are the section editor of a daily newspaper. You are given every "
     "headline in today's edition with a short summary, and you decide what "
     "the sections of today's paper are.\n"
     "\n"
     "HARD RULES:\n"
-    f"- Name between {MIN_TOPICS} and {MAX_TOPICS} topics. Fewer is better "
-    "than padding: only name a topic that several stories actually belong to, "
-    "or that one very significant story demands.\n"
+    + _RULE_SIZE +
     "- Together the topics must cover every story. Every story has to have a "
     "topic it plausibly belongs to.\n"
     "- A topic is about SUBJECT MATTER, not about where a story came from. "
@@ -115,6 +214,16 @@ _SYSTEM_TOPICS_JSON = _SYSTEM_TOPICS.rsplit("OUTPUT:", 1)[0] + (
     "...]}, most significant first.\n"
     "- No other keys, no prose outside the JSON."
 )
+
+
+def _topics_system(as_json: bool, standing: Sequence[Topic]) -> str:
+    """The naming prompt, with the size rule that fits this paper."""
+    base = _SYSTEM_TOPICS_JSON if as_json else _SYSTEM_TOPICS
+    if not standing:
+        return base
+    return base.replace(
+        _RULE_SIZE, _RULE_SIZE_STANDING.format(cap=own_topic_cap(len(standing)))
+    )
 
 TOPICS_SCHEMA = {
     "type": "object",
@@ -201,9 +310,19 @@ def parse_topics(reply: str, limit: int = MAX_TOPICS) -> list[Topic]:
 
 
 async def propose_topics(
-    backend: LLMBackend, items: Sequence[tuple[str, str]]
+    backend: LLMBackend,
+    items: Sequence[tuple[str, str]],
+    standing: Sequence[Topic] = (),
 ) -> list[Topic]:
-    """Name the topics of an edition, in one call over all of its headlines."""
+    """Name the topics of an edition, in one call over all of its headlines.
+
+    `standing` are the configured sections. They are shown to the model as the
+    baseline to add to, and `merge_topics` makes the answer honour them
+    whatever the model actually wrote — except when it wrote nothing usable at
+    all, which still turns the stage off for the edition: a paper filed into
+    standing sections by a model that could not read the day is not a paper
+    the editor asked for.
+    """
     if not items:
         return []
     limits = backend.limits
@@ -218,14 +337,22 @@ async def propose_topics(
         f"<summary>{(summary or '')[:chars]}</summary>\n</candidate>"
         for i, (title, summary) in enumerate(head)
     ]
+    if standing:
+        listing = "\n".join(f"<topic>{t.line()}</topic>" for t in standing)
+        parts.insert(0, f"<standing>\n{listing}\n</standing>")
     use_json = backend.supports_json
     reply = await backend.chat(
-        _SYSTEM_TOPICS_JSON if use_json else _SYSTEM_TOPICS,
+        _topics_system(use_json, standing),
         "\n".join(parts),
         max_tokens=limits.topic_output_tokens,
         json_schema=TOPICS_SCHEMA if use_json else None,
     )
-    return parse_topics(reply)
+    proposed = parse_topics(
+        reply, limit=len(standing) + own_topic_cap(len(standing))
+    )
+    if not proposed:
+        return []
+    return merge_topics(proposed, standing)
 
 
 # --- 2. one article's topic ----------------------------------------------

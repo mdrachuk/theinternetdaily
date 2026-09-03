@@ -25,11 +25,12 @@ from tid.cli import (
     collect_current_edition,
     gather_decorations,
 )
-from tid.config import load_sources
+from tid.config import load_sources, load_topics
 from tid.http import client_context
 from tid.llm import make_backend
 from tid.render import build_pdf
 from tid.store import open_store
+from tid.topics import standing_topics
 
 
 class VramSampler:
@@ -132,6 +133,7 @@ async def main() -> int:
     args = p.parse_args()
 
     sources = load_sources(args.config)
+    standing = standing_topics(load_topics(args.config))
     store = open_store(str(args.state))
     backend = make_backend(args.backend)
     sampler = VramSampler()
@@ -163,7 +165,7 @@ async def main() -> int:
             # of articles the topic passes will read, file and rank.
             pending_topics = len(await store.pending_render())
             async with Stage("topics", backend.usage) as st:
-                await cmd_topics(store, backend, args.workers)
+                await cmd_topics(store, backend, args.workers, standing)
             rows.append(st.row(pending_topics))
 
             articles = await collect_current_edition(store, sources)

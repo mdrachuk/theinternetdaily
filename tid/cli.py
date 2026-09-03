@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import date as date_cls, datetime
 from pathlib import Path
+from typing import Sequence
 
 import httpx
 
@@ -17,6 +18,7 @@ from .http import client_context
 from .llm import LLMBackend, make_backend
 from .render import build_pdf
 from .store import ArticleRow, Store, open_store
+from .topics import Topic, propose_topics, select_main, select_topic, standing_topics
 from .wiki import (
     fetch_did_you_know,
     fetch_quote_of_day,
@@ -32,6 +34,11 @@ def _log(msg: str) -> None:
 
 def _load_sources(path: Path) -> list[dict]:
     return config.load_sources(path)
+
+
+def _load_topics(path: Path) -> list[Topic]:
+    """The standing sections configured beside the sources."""
+    return standing_topics(config.load_topics(path))
 
 
 # Network-bound article extraction: many in flight is fine, but not unbounded
@@ -276,14 +283,19 @@ async def cmd_rewrite(
 
 
 async def cmd_topics(
-    store: Store, backend: LLMBackend, workers: int | None = None
+    store: Store,
+    backend: LLMBackend,
+    workers: int | None = None,
+    standing: Sequence[Topic] = (),
 ) -> int:
     """Decide what today's edition is about, and file every article into it.
 
     Three passes over the articles that are ready and unpublished — which is
     exactly what the next edition will carry:
 
-      1. one call naming the edition's topics, most significant first;
+      1. one call naming the edition's topics, most significant first — on
+         top of the `standing` sections from the config, which are always in
+         the set (`tid.topics.merge_topics`);
       2. one call per article choosing its most specific topic;
       3. one call per topic naming that topic's main stories, in order.
 
@@ -297,8 +309,6 @@ async def cmd_topics(
     fall back to their sources.toml section (`tid.edition`), so a paper still
     comes out.
     """
-    from .topics import propose_topics, select_main, select_topic
-
     rows = await store.pending_render()
     if not rows:
         _log("[topics] nothing pending")
@@ -309,7 +319,7 @@ async def cmd_topics(
     rows.sort(key=lambda r: r.sort_date, reverse=True)
 
     topics = await propose_topics(
-        backend, [(r.title, r.summary or "") for r in rows]
+        backend, [(r.title, r.summary or "") for r in rows], standing
     )
     if not topics:
         _log(f"[topics] the model named no usable topics for {len(rows)} "
@@ -317,6 +327,11 @@ async def cmd_topics(
         return 0
     _log(f"[topics] {len(rows)} article(s) → "
          + ", ".join(t.name for t in topics))
+    if standing:
+        fixed = {t.name for t in standing}
+        own = [t.name for t in topics if t.name not in fixed]
+        _log(f"  · {len(standing)} standing section(s); the day's own: "
+             + (", ".join(own) if own else "none"))
 
     workers = _resolve_workers(backend, workers)
     sem = asyncio.Semaphore(workers)
@@ -500,6 +515,7 @@ async def cmd_ingest(
     backend: LLMBackend,
     sources: list[dict],
     workers: int | None = None,
+    standing: Sequence[Topic] = (),
 ) -> int:
     """gather + summarize + rewrite + topics. No PDF — that's the renderer's job.
 
@@ -516,7 +532,7 @@ async def cmd_ingest(
     rc = await cmd_rewrite(store, backend, workers)
     if rc:
         return rc
-    return await cmd_topics(store, backend, workers)
+    return await cmd_topics(store, backend, workers, standing)
 
 
 async def cmd_status(store: Store) -> int:
@@ -635,6 +651,11 @@ async def _main(argv: list[str] | None = None) -> int:
     if cmd in ("gather", "ingest", "build") and not sources:
         _log("[fatal] no sources configured")
         return 2
+    try:
+        standing = _load_topics(args.config)
+    except ValueError as e:
+        _log(f"[fatal] {args.config}: {e}")
+        return 2
 
     store = open_store(store_url(args))
     if cmd == "status":
@@ -655,15 +676,19 @@ async def _main(argv: list[str] | None = None) -> int:
             if cmd == "rewrite":
                 return await cmd_rewrite(store, backend, workers)
             if cmd == "topics":
-                return await cmd_topics(store, backend, workers)
+                return await cmd_topics(store, backend, workers, standing)
             if cmd == "ingest":
-                return await cmd_ingest(client, store, backend, sources, workers)
+                return await cmd_ingest(
+                    client, store, backend, sources, workers, standing
+                )
             if cmd == "render":
                 return await cmd_render(
                     client, store, backend, args.date, args.out, sources
                 )
             if cmd == "build":
-                rc = await cmd_ingest(client, store, backend, sources, workers)
+                rc = await cmd_ingest(
+                    client, store, backend, sources, workers, standing
+                )
                 if rc:
                     return rc
                 return await cmd_render(

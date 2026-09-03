@@ -67,9 +67,10 @@ docker compose up --build -d
 Everything you'd normally want to change is in **two files**:
 
 - **`sources.toml`** — which feeds, how many items per feed, which section
-  each one files under, in what order. Two source kinds today:
-  `kind = "hn"` (Hacker News, top-by-points via the Algolia API) and
-  `kind = "rss"` (any Atom/RSS feed via feedparser).
+  each one files under, in what order; and the paper's standing sections
+  (`[[topic]]`), which every edition's topic set starts from. Two source
+  kinds today: `kind = "hn"` (Hacker News, top-by-points via the Algolia API)
+  and `kind = "rss"` (any Atom/RSS feed via feedparser).
 - **`tid/templates/`** — the paper itself. `style.css` is every colour,
   size and breakpoint; `edition.html`, `article.html` and `sources.html` are
   the three pages. Edit, restart the container, refresh.
@@ -589,6 +590,40 @@ So the last stage of every ingest reads the edition and names its own sections
 The result is stored per article (`topic`, `topic_order`, `main_rank`) and
 travels into the edition snapshot, so an archived edition still reads as the
 paper it was even after the store has moved on.
+
+### Standing sections
+
+A paper usually has sections that exist whether or not the day was big in
+them. Give the stage those as `[[topic]]` tables in `sources.toml`:
+
+```toml
+[[topic]]
+name = "World"
+blurb = "international news, politics, conflict, diplomacy"
+
+[[topic]]
+name = "Machine Learning"
+blurb = "AI research, models, and the industry around them"
+```
+
+They are the baseline of every edition's topic set. The naming call is shown
+them and asked to rank them among the rest and add the day's own topics on
+top — for a story cluster they do not cover, or one big enough to demand a
+head of its own, inside a standing section's territory or outside it. Since
+filing picks the *most specific* topic, a standing "World" still yields a
+"Ukraine" column on a day the war dominates, with the rest of the world's news
+under "World".
+
+Whatever the model answers, the final set honours the config: a standing
+section it named is restored to its configured spelling and blurb, one it left
+out is appended, and the day's own topics are capped at what `MAX_TOPICS`
+leaves room for (never fewer than two). A standing section nothing was filed
+under simply has no column that day. The one thing the config cannot do is
+rescue a naming call that failed outright — no usable topics still means the
+`sources.toml` fallback layout, because a paper filed into standing sections by
+a model that could not read the day is not the paper the editor asked for.
+Leave out every `[[topic]]` and the stage names all the sections itself, as
+before.
 
 **It is re-run over the whole unpublished set every ingest**, not just over
 new articles. A topic set describes *one* edition; a story that was gathered

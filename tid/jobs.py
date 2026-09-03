@@ -17,6 +17,7 @@ from .cli import cmd_ingest, collect_current_edition
 from .http import client_context
 from .llm import make_backend
 from .store import Store, open_store
+from .topics import standing_topics
 
 
 def _log(msg: str) -> None:
@@ -174,12 +175,13 @@ async def ingest() -> None:
         return
     async with _ingest_lock:
         sources = config.load_sources()
+        standing = standing_topics(config.load_topics())
         store = open_store(config.store_url())
         backend = make_backend(config.llm_backend())
         try:
             async with client_context() as client:
                 await cmd_ingest(
-                    client, store, backend, sources, config.workers()
+                    client, store, backend, sources, config.workers(), standing
                 )
 
             # Assemble the edition here rather than leaving it to whoever loads
