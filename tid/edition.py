@@ -64,6 +64,12 @@ class Item:
     topic: str = ""                 # the edition's own filing; "" = unfiled
     topic_order: int | None = None  # where that topic sits in the edition
     main_rank: int | None = None    # 0 = the topic's lead story; None = not main
+    # The source type (`tid.sources`) and its own fields. They are what lets
+    # the page offer an HN story's discussion *and* its link: the type reads
+    # the item id out of `extra` and names both. Carried in the snapshot, so
+    # an archived edition needs neither the store nor sources.toml for it.
+    kind: str = "rss"
+    extra: dict[str, Any] = field(default_factory=dict)
 
     @property
     def group(self) -> str:
@@ -180,6 +186,8 @@ def _to_item(a: dict) -> Item:
         topic=(a.get("topic") or "").strip(),
         topic_order=_to_int(a.get("topic_order")),
         main_rank=_to_int(a.get("main_rank")),
+        kind=str(a.get("kind") or "rss"),
+        extra=dict(a["extra"]) if isinstance(a.get("extra"), dict) else {},
     )
 
 

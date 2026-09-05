@@ -462,8 +462,36 @@ Two fields shape the layout rather than the contents, and both are optional:
 | `section` | the source name | the column this source falls back to when the topics stage did not file its articles. Sources sharing a section share a column and interleave by date, so "The Guardian" and "Kyiv Independent" both under `section = "World"` read as one column, not two lists. |
 | `medium`  | `"read"`      | `read`, `watch` or `listen`. Drives the glyph in the byline and the filter row in the nav. |
 
-Note `medium` is not `kind`: `kind` is *how we fetch it* (`rss`/`hn`),
-`medium` is *what you do with it*.
+Note `medium` is not `kind`: `kind` is *what sort of source this is*
+(`rss`/`hn`), `medium` is *what you do with it*.
+
+### Source types
+
+`kind` is not a label. It names a **source type** — one class in
+`tid/sources/` — and that type decides three things at once:
+
+- **what a record carries** beyond the standard fields. Every article has a
+  URL, a title, a body; a Hacker News story also has its item id, points and
+  comment count, and those live in the row's `extra` under the type's own
+  keys.
+- **how items are loaded and parsed** — feedparser over a feed URL, or the
+  Algolia search API ranked by points.
+- **how an article is displayed**: the chips in its byline, and the "open"
+  buttons on its page and in the preview drawer. Each chip is a place the
+  reader can go, with the favicon of where it leads.
+
+For a feed article that is one chip, the source, pointing at the piece. For a
+Hacker News story it is two — **[Hacker News] → [github.com]** — the first
+opening the discussion, the second the thing being discussed. An Ask HN or
+Show HN thread that links nowhere else gets the one chip. The store keeps
+the type and its fields on the row, and the edition snapshot carries them,
+so an archived paper renders the same chips without the config or the
+store; a row gathered before the fields existed is back-filled by the next
+gather that sees the story, and shows the plain source link until then.
+
+Adding a kind is one module with a class satisfying `SourceType` — `fetch`
+and `links` — registered in `tid/sources/__init__.py`. Nothing else in the
+pipeline names a kind.
 
 World news, quote of the day, and the "Did you know…" nuggets are not
 configured here — they are PDF cover decorations, fetched fresh by
@@ -472,7 +500,8 @@ configured here — they are PDF cover decorations, fetched fresh by
 ### `kind = "hn"` — Hacker News via the Algolia search API
 
 Ranks stories by points within a time window. No URL needed; the API is
-hardcoded.
+hardcoded. Each story records its HN item id, points and comment count, and
+its byline offers both the discussion and the link.
 
 | field          | type | default | meaning |
 |----------------|------|---------|---------|
@@ -896,7 +925,12 @@ can't surprise you above whatever you set.
 ```
 theinternetdaily/
 ├── tid/
-│   ├── fetch.py          # HN Algolia + RSS feedparser
+│   ├── sources/          # source types: what a kind records, fetches and shows
+│   │   ├── base.py       #   RawItem, Link, the SourceType protocol
+│   │   ├── rss.py        #   kind = "rss": feedparser, one chip
+│   │   ├── hn.py         #   kind = "hn": Algolia, discussion + link chips
+│   │   └── wikipedia.py  #   kind = "wikipedia_events"
+│   ├── fetch.py          # compatibility re-exports of the fetchers
 │   ├── extract.py        # trafilatura
 │   ├── llm.py            # LLMBackend protocol: Anthropic / vLLM / Ollama
 │   ├── testing.py        # FakeBackend, so CI needs no GPU or API key

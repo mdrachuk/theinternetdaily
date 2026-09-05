@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from tid import icons
-from tid.fetch import _entry_image
+from tid.sources.rss import entry_image as _entry_image
 
 
 # --- what counts as a domain ----------------------------------------------

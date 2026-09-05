@@ -1,5 +1,5 @@
 {% extends "layout.html" %}
-{% from "_macros.html" import byline, photo %}
+{% from "_macros.html" import byline, open_buttons, photo %}
 {% block title %}{{ item.title }} — The Internet Daily{% endblock %}
 
 {% block body %}
@@ -9,7 +9,9 @@
         <span class="assembled">{{ item.group }}</span>
       </div>
       <div class="nav-tools">
-        <a class="link" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Open at {{ item.source }} ↗</a>
+        {%- for l in item|links %}
+        <a class="link" href="{{ l.href }}" target="_blank" rel="noopener noreferrer"{% if l.title %} title="{{ l.title }}"{% endif %}>{{ l.label }} ↗</a>
+        {%- endfor %}
       </div>
     </nav>
 
@@ -25,7 +27,7 @@
       {%- endif %}
       <div class="foot">
         <a class="btn" href="{{ back }}">← Back to the edition</a>
-        <a class="btn quiet" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Open at {{ item.source }} ↗</a>
+        {{ open_buttons(item, cls="btn quiet") }}
       </div>
       <p class="note small">Rewritten from {{ item.source }}{% if item.date %} · {{ item.date }}{% endif %}. Read it at the source if the rewrite lost something.</p>
     </article>

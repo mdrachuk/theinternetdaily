@@ -66,7 +66,7 @@ from fastapi.responses import (
     Response,
 )
 
-from . import archive, config, edition as ed, icons, jobs, site
+from . import archive, config, edition as ed, icons, jobs, site, sources
 from .http import client_context
 from .queue import open_queue
 from .store import open_store
@@ -361,9 +361,12 @@ def _source_rows(in_edition: dict[str, int] | None = None) -> list[dict]:
         name = s.get("name", "?")
         url = s.get("url", "")
         hours = s.get("since_hours")
+        kind = sources.kind_of(s)
+        source_type = sources.get(kind)
         rows.append({
             "name": name,
-            "kind": s.get("kind"),
+            "kind": kind,
+            "kind_label": source_type.label if source_type else f"unknown kind {kind!r}",
             "url": url,
             "section": s.get("section") or name,
             "medium": s.get("medium") or "read",

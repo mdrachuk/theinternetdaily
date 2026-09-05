@@ -29,7 +29,7 @@
           {%- if src.icon %}<img src="{{ src.icon }}" alt="" width="32" height="32" loading="lazy">{% else %}<span></span>{% endif %}
           <div>
             <div class="name">{% if src.url %}<a href="{{ src.url }}" target="_blank" rel="noopener noreferrer">{{ src.name }}</a>{% else %}{{ src.name }}{% endif %}</div>
-            <div class="line">{{ src.section }} · {{ src.medium }}{% if src.rate %} · {{ src.rate }}{% endif %}</div>
+            <div class="line">{{ src.section }} · {{ src.medium }} · {{ src.kind_label }}{% if src.rate %} · {{ src.rate }}{% endif %}</div>
           </div>
           <div class="tags">
             {%- if src.window %}<span class="tag">{{ src.window }}</span>{% endif %}

@@ -14,7 +14,7 @@
     dek: document.getElementById("pv-dek"),
     excerpt: document.getElementById("pv-excerpt"),
     read: document.getElementById("pv-read"),
-    source: document.getElementById("pv-source")
+    links: document.getElementById("pv-links")
   };
   var opener = null;
 
@@ -34,8 +34,21 @@
     else { el.image.removeAttribute("src"); el.image.hidden = true; }
     el.read.href = d.read || "#";
     el.read.hidden = !d.read;
-    el.source.href = d.url || "#";
-    el.source.textContent = "Open at " + (d.source || "source") + " ↗";
+    // One button per chip in the byline — the discussion and the link for a
+    // Hacker News story, the source alone for a feed. Read from the card, so
+    // the source type's decision is made once, in the template.
+    el.links.textContent = "";
+    var chips = card.querySelectorAll(".byline a.src");
+    for (var i = 0; i < chips.length; i++) {
+      var a = document.createElement("a");
+      a.className = "btn quiet";
+      a.href = chips[i].href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      if (chips[i].title) a.title = chips[i].title;
+      a.textContent = chips[i].textContent.trim() + " ↗";
+      el.links.appendChild(a);
+    }
     opener = card.querySelector(".pv-open");
     scrim.hidden = false;
     document.body.style.overflow = "hidden";

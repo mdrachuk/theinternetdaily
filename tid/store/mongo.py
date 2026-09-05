@@ -22,7 +22,7 @@ _FIELDS = (
     "url", "title", "title_norm", "source", "text", "body", "summary",
     "surfaced", "published", "fetched_at", "extracted_at", "summarized_at",
     "rewritten_at", "rendered_at", "image", "topic", "topic_order",
-    "main_rank",
+    "main_rank", "kind", "extra",
 )
 
 
@@ -57,6 +57,8 @@ def _from_doc(doc: dict[str, Any]) -> ArticleRow:
         topic=doc.get("topic"),
         topic_order=doc.get("topic_order"),
         main_rank=doc.get("main_rank"),
+        kind=doc.get("kind") or "",
+        extra=dict(doc.get("extra") or {}),
     )
 
 
@@ -124,6 +126,8 @@ class MongoStore:
         surfaced: str | None = None,
         published: str | None = None,
         image: str | None = None,
+        kind: str = "",
+        extra: dict[str, Any] | None = None,
     ) -> None:
         await self.ensure_indexes()
         now = now_iso()
@@ -131,6 +135,7 @@ class MongoStore:
             id=url_hash(url), url=url, title=title, source=source,
             text=text, surfaced=surfaced, published=published, image=image,
             fetched_at=now, extracted_at=now if text is not None else None,
+            kind=kind, extra=dict(extra or {}),
         )
         doc = _to_doc(row)
         _id = doc.pop("_id")
@@ -146,9 +151,16 @@ class MongoStore:
             backfill["published"] = published
         if image:
             backfill["image"] = image
+        # The source type's fields count as missing when empty, too: "" and
+        # {} are what rows from before the fields existed carry.
+        if kind:
+            backfill["kind"] = kind
+        if extra:
+            backfill["extra"] = dict(extra)
         for field, value in backfill.items():
             await self.col.update_one(
-                {"_id": _id, "$or": [{field: None}, {field: {"$exists": False}}]},
+                {"_id": _id, "$or": [{field: None}, {field: {"$exists": False}},
+                                     {field: ""}, {field: {}}]},
                 {"$set": {field: value}},
             )
         if surfaced or published:
@@ -308,7 +320,7 @@ class MongoStore:
             _id = doc.pop("_id")
             # Never overwrite a populated field with a null from the source
             # store: a migration must not lose a summary the target already has.
-            setters = {k: v for k, v in doc.items() if v is not None}
+            setters = {k: v for k, v in doc.items() if v not in (None, "", {})}
             ops.append(UpdateOne({"_id": _id}, {"$set": setters}, upsert=True))
         await self.col.bulk_write(ops, ordered=False)
         return len(rows)
