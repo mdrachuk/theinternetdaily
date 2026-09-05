@@ -196,6 +196,8 @@ async def _run_llm_stage(
     apply_fn,
     workers: int,
     batch_size: int,
+    retries: int = 0,
+    fallback: str | None = None,
 ) -> int:
     """Shared driver for the summarize and rewrite stages: chunk the pending
     rows, run `batch_fn` over each chunk with at most `workers` in flight, and
@@ -205,6 +207,12 @@ async def _run_llm_stage(
     model, where one stage runs for tens of minutes: a crash at article 43
     must not throw away 42 articles' worth of GPU time. Every stage is
     resumable — whatever was stored is simply not pending next time.
+
+    A row the model failed on — the call raised, or the reply did not label
+    it — is sent again up to `retries` more times, in a batch of only the
+    failures. Whatever is still unusable after that is stored as `fallback`
+    when one is given, so the row stops being pending; with no fallback it is
+    left for the next run.
     """
     batches = _chunks_by_source(pending, batch_size)
     _log(f"[{stage}] {len(pending)} pending in {len(batches)} batch(es) "
@@ -212,26 +220,51 @@ async def _run_llm_stage(
     sem = asyncio.Semaphore(workers)
     finished = 0
 
+    async def _attempt(rows: list[ArticleRow]) -> list[str]:
+        """One LLM call. A raised call counts as every row unusable, so the
+        retry loop treats a timeout and an unparseable reply the same way."""
+        try:
+            return await batch_fn([(r.title, r.text or "") for r in rows])
+        except Exception as e:
+            _log(f"  [error] batch ({len(rows)} articles): {e}")
+            return [""] * len(rows)
+
     async def _one(rows: list[ArticleRow]) -> tuple[int, int]:
         nonlocal finished
+        done = 0
+        todo = list(rows)
         async with sem:
             started = time.perf_counter()
-            out = await batch_fn([(r.title, r.text or "") for r in rows])
+            for attempt in range(retries + 1):
+                if attempt:
+                    _log(f"  ↻ retry {attempt}/{retries} for {len(todo)} "
+                         f"article(s)")
+                out = await _attempt(todo)
+                failed: list[ArticleRow] = []
+                for row, value in zip(todo, out):
+                    if value:
+                        await apply_fn(row.id, value)
+                        done += 1
+                    else:
+                        failed.append(row)
+                todo = failed
+                if not todo:
+                    break
             elapsed = time.perf_counter() - started
-        done = errors = 0
-        for row, value in zip(rows, out):
-            if value:
-                await apply_fn(row.id, value)
-                done += 1
-            else:
-                # The model failed to label this one. Leave it pending rather
-                # than storing junk; the next run picks it up.
-                errors += 1
+        if todo and fallback is not None:
+            # Every attempt failed on these. File the placeholder so they stop
+            # being re-sent on each ingest and the paper says what happened.
+            for row in todo:
+                await apply_fn(row.id, fallback)
+        # Without a fallback the leftovers stay pending rather than storing
+        # junk; the next run picks them up.
+        errors = len(todo)
         finished += 1
         # Logged as each batch lands, not after the gather: a silent terminal
         # for twenty minutes is indistinguishable from a hang.
         _log(f"  ✓ batch of {len(rows)} "
-             f"({finished}/{len(batches)}, {elapsed:.1f}s, {errors} unusable)")
+             f"({finished}/{len(batches)}, {elapsed:.1f}s, {errors} unusable"
+             f"{f', filed as {fallback!r}' if errors and fallback else ''})")
         return done, errors
 
     results = await asyncio.gather(
@@ -259,7 +292,7 @@ def _resolve_workers(backend: LLMBackend, workers: int | None) -> int:
 async def cmd_summarize(
     store: Store, backend: LLMBackend, workers: int | None = None
 ) -> int:
-    from .summarize import summarize_batch
+    from .summarize import NO_SUMMARY, SUMMARY_RETRIES, summarize_batch
 
     pending = await store.pending_summary()
     if not pending:
@@ -273,6 +306,8 @@ async def cmd_summarize(
         "summarize", pending, _batch, store.set_summary,
         _resolve_workers(backend, workers),
         backend.limits.summarize_batch,
+        retries=SUMMARY_RETRIES,
+        fallback=NO_SUMMARY,
     )
 
 

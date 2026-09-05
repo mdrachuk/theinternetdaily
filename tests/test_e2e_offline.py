@@ -173,14 +173,109 @@ async def test_batches_are_sized_by_the_backend(pipeline):
     assert len(backend.calls) == 2
 
 
-async def test_a_refusing_model_leaves_the_articles_pending(pipeline):
+async def test_a_refusing_model_is_retried_twice_then_filed_as_no_summary(
+    pipeline,
+):
     """A model that answers with prose instead of the protocol must not store
-    junk: the article stays pending and the next run tries again."""
+    junk. The batch is retried twice; if it still fails, the articles are
+    filed with the "No Summary" placeholder rather than left pending forever,
+    so the next ingest does not burn the same call again."""
+    from tid.summarize import NO_SUMMARY
+
     client, store, _ = pipeline
     await cmd_gather(client, store, SOURCES)
     refuser = FakeBackend(respond=lambda system, user: "I cannot help with that.")
     assert await cmd_summarize(store, refuser) == 0
-    assert (await store.counts())["pending_summary"] == 2
+    assert len(refuser.calls) == 3          # the attempt plus two retries
+    assert (await store.counts())["pending_summary"] == 0
+    # And the paper carries them, saying so plainly under the headline.
+    await cmd_rewrite(store, FakeBackend())
+    articles = await collect_current_edition(store, SOURCES)
+    assert [a["summary"] for a in articles] == [NO_SUMMARY, NO_SUMMARY]
+    # A re-run has nothing to send: the placeholder is a stored summary.
+    await cmd_summarize(store, refuser)
+    assert len(refuser.calls) == 3
+
+
+async def test_a_model_that_recovers_on_retry_needs_no_placeholder(pipeline):
+    """One bad reply is a retry, not a "No Summary": the second attempt's
+    real summaries are what gets stored."""
+    client, store, _ = pipeline
+    await cmd_gather(client, store, SOURCES)
+    good = FakeBackend()
+    flaky_calls = []
+
+    def _flaky(system, user):
+        flaky_calls.append(user)
+        if len(flaky_calls) == 1:
+            return "I cannot help with that."
+        return good._summaries(user, as_json=False)
+
+    flaky = FakeBackend(respond=_flaky)
+    assert await cmd_summarize(store, flaky) == 0
+    assert len(flaky.calls) == 2
+    assert (await store.counts())["pending_summary"] == 0
+    articles = await collect_current_edition(store, SOURCES)
+    assert all(a["summary"].startswith("Summary of article") for a in articles)
+
+
+async def test_only_the_failed_articles_are_retried(pipeline):
+    """A batch where the model labelled one article and dropped the other
+    re-sends only the dropped one, so the retry is cheaper than the call."""
+    from tid.summarize import NO_SUMMARY
+
+    client, store, _ = pipeline
+    await cmd_gather(client, store, SOURCES)
+
+    def _half(system, user):
+        # Label article 0 only; whatever else is in the batch goes missing.
+        return "0. Only the first one."
+
+    half = FakeBackend(respond=_half)
+    assert await cmd_summarize(store, half) == 0
+    # The first call carried both articles, the retry only the leftover.
+    assert len(half.calls) == 2
+    assert half.calls[0]["user"].count("<article id=") == 2
+    assert half.calls[1]["user"].count("<article id=") == 1
+    # The retried article is renumbered 0 in its own batch, so the fake
+    # labels it too: the second article gets a real summary on the retry.
+    await cmd_rewrite(store, FakeBackend())
+    articles = await collect_current_edition(store, SOURCES)
+    assert [a["summary"] for a in articles] == ["Only the first one."] * 2
+    assert NO_SUMMARY not in {a["summary"] for a in articles}
+
+
+async def test_a_raising_backend_is_retried_the_same_way(pipeline):
+    """A timeout or a 5xx is a failure like an unparseable reply: retried
+    twice, then filed as "No Summary" instead of aborting the stage."""
+    from tid.summarize import NO_SUMMARY
+
+    client, store, _ = pipeline
+    await cmd_gather(client, store, SOURCES)
+
+    def _boom(system, user):
+        raise RuntimeError("vllm 503: overloaded")
+
+    broken = FakeBackend(respond=_boom)
+    assert await cmd_summarize(store, broken) == 0
+    assert len(broken.calls) == 3
+    assert (await store.counts())["pending_summary"] == 0
+    await cmd_rewrite(store, FakeBackend())
+    articles = await collect_current_edition(store, SOURCES)
+    assert {a["summary"] for a in articles} == {NO_SUMMARY}
+
+
+async def test_the_rewrite_stage_still_leaves_failures_pending(pipeline):
+    """Retries and the placeholder are the summary stage's policy. A rewrite
+    the model refused is not retried and stores nothing: the article keeps
+    its extracted text and stays pending for the next run."""
+    client, store, backend = pipeline
+    await cmd_gather(client, store, SOURCES)
+    await cmd_summarize(store, backend)
+    refuser = FakeBackend(respond=lambda system, user: "I cannot help with that.")
+    assert await cmd_rewrite(store, refuser) == 0
+    assert len(refuser.calls) == 1
+    assert (await store.counts())["pending_rewrite"] == 2
 
 
 async def test_json_backend_takes_the_same_path(pipeline):

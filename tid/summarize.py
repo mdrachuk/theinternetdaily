@@ -6,6 +6,13 @@ from typing import Sequence
 from .llm import LLMBackend
 from .protocol import parse_json_batch
 
+# What an article carries when the model could not be made to summarize it.
+# A failed batch is retried SUMMARY_RETRIES more times first; only an article
+# that came back unusable on every attempt is filed with this placeholder,
+# so it stops being re-sent on every ingest and the paper says so plainly.
+NO_SUMMARY = "No Summary"
+SUMMARY_RETRIES = 2
+
 _SYSTEM = (
     "You write a 2-sentence summary of a piece of content for a daily digest.\n"
     "\n"
