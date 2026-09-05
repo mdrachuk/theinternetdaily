@@ -21,8 +21,9 @@ from typing import Any
 import jinja2
 from markupsafe import Markup
 
-from . import icons
+from . import icons, sources
 from .edition import Edition, Item
+from .sources import Link
 
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -88,6 +89,16 @@ def filter_glyph(medium: str) -> Markup:
 
 def icon(url: str) -> str:
     return icons.icon_url(url)
+
+
+def links(item: Item) -> list[Link]:
+    """The byline's chips: where this article sends the reader.
+
+    The source type decides. A feed article has one, its source; a Hacker
+    News story has two — the discussion, then the site it points at — and
+    the template prints an arrow between them.
+    """
+    return sources.links_for(item)
 
 
 def has_math(body: str) -> bool:
@@ -156,6 +167,7 @@ def env() -> jinja2.Environment:
         glyph=glyph,
         filter_glyph=filter_glyph,
         icon=icon,
+        links=links,
         article_html=article_html,
     )
     return e

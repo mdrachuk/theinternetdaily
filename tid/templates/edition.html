@@ -92,7 +92,10 @@
       <p class="excerpt" id="pv-excerpt"></p>
       <div class="drawer-actions">
         <a class="btn" id="pv-read" href="#">Read the full text</a>
-        <a class="btn quiet" id="pv-source" href="#" target="_blank" rel="noopener noreferrer">Open at source ↗</a>
+        {#- Filled by app.js from the card's byline chips: one button per
+            place the article can be opened, which for a Hacker News story is
+            the discussion and the link. #}
+        <span class="drawer-links" id="pv-links"></span>
       </div>
       <p class="note small">The full text is stored here, rewritten and offline. Esc closes · ← → move between editions.</p>
     </div>

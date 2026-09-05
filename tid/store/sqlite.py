@@ -9,9 +9,11 @@ each time.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Any
 
 from .base import ArticleRow, norm_title, now_iso, url_hash
 
@@ -35,7 +37,9 @@ CREATE TABLE IF NOT EXISTS article (
     image          TEXT,              -- lead image URL (feed enclosure or og:image)
     topic          TEXT,              -- NULL until the topic stage files it
     topic_order    INTEGER,           -- the topic's rank within its edition
-    main_rank      INTEGER            -- 0 = the topic's lead story; NULL = not main
+    main_rank      INTEGER,           -- 0 = the topic's lead story; NULL = not main
+    kind           TEXT,              -- source type (tid.sources); NULL = pre-dates the column
+    extra          TEXT               -- the type's own fields, as JSON; NULL = none
 );
 CREATE INDEX IF NOT EXISTS idx_title_norm  ON article(title_norm);
 CREATE INDEX IF NOT EXISTS idx_rendered_at ON article(rendered_at);
@@ -46,7 +50,7 @@ _COLUMNS = (
     "url_hash", "url", "title", "title_norm", "source", "text", "body",
     "summary", "surfaced", "published", "fetched_at", "extracted_at",
     "summarized_at", "rewritten_at", "rendered_at", "image", "topic",
-    "topic_order", "main_rank",
+    "topic_order", "main_rank", "kind", "extra",
 )
 
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM article"
@@ -64,7 +68,25 @@ _ADDED_COLUMNS = {
     "topic": "TEXT",
     "topic_order": "INTEGER",
     "main_rank": "INTEGER",
+    "kind": "TEXT",
+    "extra": "TEXT",
 }
+
+
+def _dump_extra(extra: dict[str, Any] | None) -> str | None:
+    """Empty means NULL, so `COALESCE(excluded.extra, extra)` in the bulk
+    copy keeps what the target has rather than blanking it."""
+    return json.dumps(extra, ensure_ascii=False, sort_keys=True) if extra else None
+
+
+def _load_extra(blob: str | None) -> dict[str, Any]:
+    if not blob:
+        return {}
+    try:
+        data = json.loads(blob)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _migrate(con: sqlite3.Connection) -> None:
@@ -109,6 +131,8 @@ def _row(r: sqlite3.Row) -> ArticleRow:
         topic=r["topic"],
         topic_order=r["topic_order"],
         main_rank=r["main_rank"],
+        kind=r["kind"] or "",
+        extra=_load_extra(r["extra"]),
     )
 
 
@@ -166,6 +190,8 @@ class SqliteStore:
         surfaced: str | None = None,
         published: str | None = None,
         image: str | None = None,
+        kind: str = "",
+        extra: dict[str, Any] | None = None,
     ) -> None:
         def _w() -> None:
             now = now_iso()
@@ -174,8 +200,9 @@ class SqliteStore:
                 """
                 INSERT OR IGNORE INTO article
                   (url_hash, url, title, title_norm, source, text,
-                   surfaced, published, fetched_at, extracted_at, image)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   surfaced, published, fetched_at, extracted_at, image,
+                   kind, extra)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     h, url, title, norm_title(title), source, text,
@@ -183,6 +210,7 @@ class SqliteStore:
                     now,
                     now if text is not None else None,
                     image,
+                    kind or None, _dump_extra(extra),
                 ),
             )
             # Back-fill date fields on rows that exist but lack them (re-gather).
@@ -200,6 +228,22 @@ class SqliteStore:
                 self.con.execute(
                     "UPDATE article SET image = ? WHERE url_hash = ? AND image IS NULL",
                     (image, h),
+                )
+            # The source type's fields, on a row written before they were
+            # recorded. An HN story gathered last month gains its item id —
+            # and so its discussion chip — the next time the feed still
+            # carries it.
+            if kind:
+                self.con.execute(
+                    "UPDATE article SET kind = ? WHERE url_hash = ? "
+                    "AND (kind IS NULL OR kind = '')",
+                    (kind, h),
+                )
+            if extra:
+                self.con.execute(
+                    "UPDATE article SET extra = ? WHERE url_hash = ? "
+                    "AND (extra IS NULL OR extra = '' OR extra = '{}')",
+                    (_dump_extra(extra), h),
                 )
             self.con.commit()
 
@@ -407,7 +451,9 @@ class SqliteStore:
                     image         = COALESCE(excluded.image, image),
                     topic         = COALESCE(excluded.topic, topic),
                     topic_order   = COALESCE(excluded.topic_order, topic_order),
-                    main_rank     = COALESCE(excluded.main_rank, main_rank)
+                    main_rank     = COALESCE(excluded.main_rank, main_rank),
+                    kind          = COALESCE(excluded.kind, kind),
+                    extra         = COALESCE(excluded.extra, extra)
                 """,
                 [
                     (
@@ -416,6 +462,7 @@ class SqliteStore:
                         r.fetched_at, r.extracted_at, r.summarized_at,
                         r.rewritten_at, r.rendered_at, r.image, r.topic,
                         r.topic_order, r.main_rank,
+                        r.kind or None, _dump_extra(r.extra),
                     )
                     for r in rows
                 ],

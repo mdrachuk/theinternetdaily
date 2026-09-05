@@ -57,6 +57,11 @@ class ArticleRow:
     unpublished when the next one is named gets re-filed with it. All three are
     NULL when the stage has not run or could not place the article, and
     `tid.edition` then falls back to the `sources.toml` section.
+
+    `kind` and `extra` are the source type's: which type wrote the row, and
+    whatever it records that the standard fields do not. They travel with the
+    article into the edition snapshot, so an archived page still knows that a
+    story came from Hacker News and where its discussion lives.
     """
     id: str
     url: str
@@ -77,6 +82,12 @@ class ArticleRow:
     topic: str | None = None          # LLM-assigned topic for its edition
     topic_order: int | None = None    # that topic's rank among the edition's
     main_rank: int | None = None      # 0 = the topic's lead story; NULL = not main
+    # The source type that produced the row (`tid.sources`), and that type's
+    # own fields beyond the standard ones — an HN row keeps the item id, the
+    # points and the comment count here. "" and {} on rows from before the
+    # columns existed; a re-gather back-fills both.
+    kind: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.title_norm:
@@ -129,7 +140,14 @@ class Store(Protocol):
         surfaced: str | None = None,
         published: str | None = None,
         image: str | None = None,
-    ) -> None: ...
+        kind: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """File a freshly gathered article; a no-op for a URL already held,
+        except that missing dates, image, `kind` and `extra` are back-filled.
+        The back-fill is what upgrades a store: rows written before a field
+        existed pick it up on the next gather that sees them."""
+        ...
 
     # --- summarize ------------------------------------------------------
     async def pending_summary(self) -> list[ArticleRow]: ...

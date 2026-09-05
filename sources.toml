@@ -1,5 +1,11 @@
 # Add, remove, or reorder sources here.
-# kind        = "hn" | "rss"    how the source is fetched (Algolia / feedparser)
+# kind        = "hn" | "rss"    the SOURCE TYPE (tid/sources/). Not a label:
+#                               it decides what a record carries beyond the
+#                               standard fields, how items are fetched and
+#                               parsed, and how an article is shown. An "rss"
+#                               article gets one byline chip, its source; an
+#                               "hn" story gets two — [Hacker News] for the
+#                               discussion, then the site it links to.
 # section     = "Science & Maths"   FALLBACK column. The paper's columns are
 #                               named per edition by the topics stage, which
 #                               reads the day's headlines and files each

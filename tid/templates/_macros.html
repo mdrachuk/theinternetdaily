@@ -1,16 +1,28 @@
-{# Byline: source mark, medium glyph, source name, reading time. The glyph is
-   inline SVG from tid.icons, so `read` items simply get nothing. #}
+{# Byline: medium glyph, then one chip per place the article can send the
+   reader, then the reading time. The chips come from the source type
+   (tid.sources): a feed article has one, its source, pointing at the piece; a
+   Hacker News story has two — the discussion, then the site it links to — and
+   they are printed [Hacker News] → [github.com]. Each chip carries the favicon
+   of the place it points at. The glyph is inline SVG from tid.icons, so `read`
+   items simply get nothing. #}
 {% macro byline(item, top=False) -%}
 <div class="byline{% if top %} top{% endif %}">
-  {%- if item.url|icon %}<img src="{{ item.url|icon }}" alt="" width="13" height="13" loading="lazy">{% endif -%}
-  {{ item.medium|glyph }}
-  <span>{{ item.source }}{% if item.meta %} · {{ item.meta }}{% endif %}</span>
+  {{- item.medium|glyph -}}
+  {%- for l in item|links -%}
+    {%- if not loop.first %}<span class="arrow" aria-hidden="true">→</span>{% endif -%}
+    <a class="src {{ l.role }}" href="{{ l.href }}" target="_blank" rel="noopener noreferrer"{% if l.title %} title="{{ l.title }}"{% endif %}>
+      {%- if l.href|icon %}<img src="{{ l.href|icon }}" alt="" width="13" height="13" loading="lazy">{% endif -%}
+      <span>{{ l.label }}</span></a>
+  {%- endfor -%}
+  {%- if item.meta %}<span class="meta">{{ item.meta }}</span>{% endif -%}
 </div>
 {%- endmacro %}
 
 {# One headline. `dek` decides whether the summary is printed under it; it
    travels in a data attribute either way, because the preview drawer shows it
-   for every item and reads it out of the DOM rather than over the network. #}
+   for every item and reads it out of the DOM rather than over the network.
+   The byline sits beside the title link rather than inside it: its chips are
+   links of their own, and an anchor cannot hold another. #}
 {% macro headline(item, edition_key, cls="", tag="h3", dek=False, top=False, actions=False) -%}
 <article class="hl {{ cls }}"
          data-source="{{ item.source }}"
@@ -19,21 +31,31 @@
          data-dek="{{ item.dek }}"
          data-image="{{ item.image or '' }}"
          data-excerpt="{{ item.body|excerpt }}">
-  <a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
-    {%- if top %}{{ byline(item, top=True) }}{% endif %}
+  {%- if top %}{{ byline(item, top=True) }}{% endif %}
+  <a class="hla" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
     <{{ tag }} class="hlt">{{ item.title }}</{{ tag }}>
     {%- if dek and item.dek %}<p class="dek">{{ item.dek }}</p>{% endif %}
-    {%- if not top %}{{ byline(item) }}{% endif %}
   </a>
+  {%- if not top %}{{ byline(item) }}{% endif %}
   {%- if actions %}
   <div class="lead-actions">
-    <a class="btn" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">Open at source ↗</a>
+    {{ open_buttons(item) }}
     <button class="btn quiet pv-open" type="button">Preview</button>
   </div>
   {%- else %}
   <button class="pv pv-open" type="button">Preview</button>
   {%- endif %}
 </article>
+{%- endmacro %}
+
+{# The "open it" buttons: one per link the source type offers. The article
+   page's nav and foot, the lead's actions and the preview drawer all print
+   the same set, so a Hacker News story offers its discussion everywhere its
+   link is offered. #}
+{% macro open_buttons(item, cls="btn") -%}
+{%- for l in item|links %}
+<a class="{{ cls }}{% if not loop.first and 'quiet' not in cls %} quiet{% endif %}" href="{{ l.href }}" target="_blank" rel="noopener noreferrer"{% if l.title %} title="{{ l.title }}"{% endif %}>{{ l.label }} ↗</a>
+{%- endfor %}
 {%- endmacro %}
 
 {% macro photo(src, alt="") -%}

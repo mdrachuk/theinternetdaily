@@ -12,11 +12,12 @@ from typing import Sequence
 import httpx
 
 from . import config
+from . import sources as source_types
 from .extract import extract
-from .fetch import RawItem, fetch_hn, fetch_rss, fetch_wikipedia_events
 from .http import client_context
 from .llm import LLMBackend, make_backend
 from .render import build_pdf
+from .sources import RawItem
 from .store import ArticleRow, Store, norm_title, open_store
 from .topics import Topic, propose_topics, select_main, select_topic, standing_topics
 from .wiki import (
@@ -51,33 +52,31 @@ FETCH_CONCURRENCY = 8
 async def _fetch_source(
     client: httpx.AsyncClient, src: dict
 ) -> list[RawItem] | None:
-    """Resolve one source config to its raw items. None on failure."""
-    name = src["name"]
-    kind = src.get("kind", "rss")
+    """Resolve one source config to its raw items. None on failure.
+
+    Which items, and how, is the source type's business (`tid.sources`); this
+    only turns its failures into a logged skip so one dead feed does not end
+    the gather.
+    """
     try:
-        if kind == "hn":
-            return await fetch_hn(
-                client,
-                source_name=name,
-                since_hours=int(src.get("since_hours", 48)),
-                min_points=int(src.get("min_points", 50)),
-            )
-        if kind == "rss":
-            since_hours = src.get("since_hours")
-            return await fetch_rss(
-                client, name, src["url"],
-                since_hours=int(since_hours) if since_hours is not None else None,
-            )
-        if kind == "wikipedia_events":
-            return await fetch_wikipedia_events(
-                source_name=name,
-                days_back=src.get("days_back", 1),
-            )
-        _log(f"  [warn] unknown source kind '{kind}'")
+        return await source_types.fetch(client, src)
+    except LookupError as e:
+        _log(f"  [warn] {e}")
         return None
     except Exception as e:
         _log(f"  [error] fetch failed: {e}")
         return None
+
+
+async def _file(store: Store, it: RawItem, **fields) -> None:
+    """Write one gathered item to the store, with everything the fetch knew
+    about it. The source type's `kind` and `extra` ride along on every write,
+    including the back-fill of an item already held."""
+    await store.insert_raw(
+        it.source, it.url, it.title,
+        surfaced=it.surfaced, kind=it.kind, extra=it.extra,
+        **{"text": None, "image": it.image, **fields},
+    )
 
 
 async def cmd_gather(
@@ -105,12 +104,10 @@ async def cmd_gather(
         seen_here: set[str] = set()
         for it in items:
             if await store.exists(it.url):
-                # Back-fill the surfacing date on a re-gather. insert_raw is
-                # a no-op insert for a URL we hold, plus the date fill.
-                await store.insert_raw(
-                    it.source, it.url, it.title,
-                    text=None, surfaced=it.surfaced, image=it.image,
-                )
+                # Back-fill on a re-gather: insert_raw is a no-op insert for a
+                # URL we hold, plus whatever the row lacks — the surfacing
+                # date, the image, the source type's own fields.
+                await _file(store, it)
                 continue
             norm = norm_title(it.title)
             if norm in seen_here or await store.exists(it.url, it.title):
@@ -131,27 +128,20 @@ async def cmd_gather(
         for it, res in zip(todo, results):
             if isinstance(res, BaseException):
                 _log(f"  [error] extract: {it.title[:60]}: {res}")
-                await store.insert_raw(
-                    it.source, it.url, it.title,
-                    text=None, surfaced=it.surfaced, image=it.image,
-                )
+                await _file(store, it)
                 failed_count += 1
                 continue
             _, art = res
             if art is None:
-                await store.insert_raw(
-                    it.source, it.url, it.title,
-                    text=None, surfaced=it.surfaced, image=it.image,
-                )
+                await _file(store, it)
                 failed_count += 1
                 _log(f"  - {it.title[:70]}  (no readable content)")
             else:
                 # Prefer the article's own date; fall back to the surfacing
                 # date so we always have something to display.
-                await store.insert_raw(
-                    it.source, it.url, it.title,
+                await _file(
+                    store, it,
                     text=art.text,
-                    surfaced=it.surfaced,
                     published=art.published or it.surfaced,
                     # The feed's own choice wins: it names the image the
                     # publisher attached to *this* article, where og:image is
@@ -521,6 +511,12 @@ async def collect_current_edition(
                 # `medium` is read/watch/listen (how you consume it), not
                 # `kind`, which is rss/hn (how we fetch it).
                 "medium": src.get("medium") or "read",
+                # The source type, and its own fields. A row from before the
+                # columns existed carries neither; the config still knows the
+                # kind, so the byline is right even before a re-gather fills
+                # the row in.
+                "kind": r.kind or source_types.kind_of(src),
+                "extra": r.extra,
                 "url": r.url,
                 "title": r.title,
                 "text": r.body or r.text,

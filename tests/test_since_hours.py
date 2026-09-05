@@ -58,12 +58,12 @@ def _client(handler) -> httpx.AsyncClient:
 
 
 async def _fetch(entries, **kwargs):
-    from tid.fetch import fetch_rss
+    from tid.sources.rss import fetch_rss
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"<rss/>")
 
-    with mock.patch("tid.fetch.feedparser.parse",
+    with mock.patch("tid.sources.rss.feedparser.parse",
                     return_value=_Feed(entries)):
         async with _client(handler) as client:
             return await fetch_rss(
@@ -229,7 +229,7 @@ async def test_numeric_filters_are_json_encoded_so_both_survive():
     """A bare Python list makes httpx emit repeated `numericFilters=` params
     and Algolia honours only the first, silently dropping the min_points
     gate. It has to be a JSON-encoded array."""
-    from tid.fetch import fetch_hn
+    from tid.sources.hn import fetch_hn
 
     captured: dict[str, httpx.URL] = {}
 
