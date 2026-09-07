@@ -181,27 +181,21 @@ img { max-width: 100%; }
 .byline.top svg { color: var(--accent); }
 .byline { flex-wrap: wrap; row-gap: 4px; }
 
-/* The chips: one per place the article can be opened. A feed article has one,
- * its source; a Hacker News story has the discussion and then the site it
- * links to, with the arrow between them. Ruled like the filter chips, but
- * set in the byline's own size so a column of headlines still reads as type
- * rather than as buttons; the hover inks the rule to say "this is a link"
- * without underlining nine-pixel capitals. */
+/* One label per place the article can be opened. A feed article has one, its
+ * source; a Hacker News story has the discussion and then the site it links
+ * to, with the arrow between them. Set as plain byline type — no rule around
+ * them, so a column of headlines still reads as type — and the hover inks the
+ * label to say "this is a link" without underlining nine-pixel capitals. */
 .byline .src {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 6px 2px 4px;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
   line-height: 1.2;
   color: inherit;
   white-space: nowrap;
 }
-.byline .src:hover { border-color: var(--ink); color: var(--ink); }
-.byline .src:focus-visible { outline: 1px solid var(--ink); outline-offset: 1px; }
-.byline.top .src { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.byline.top .src:hover { border-color: var(--accent); color: var(--accent); }
+.byline .src:hover { color: var(--ink); }
+.byline .src:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
 .byline .arrow { color: var(--faint); letter-spacing: 0; }
 .byline .meta::before { content: "· "; color: var(--faint); }
 
