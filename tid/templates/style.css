@@ -156,13 +156,13 @@ img { max-width: 100%; }
 
 .hlt { margin: 0; font-weight: 700; text-wrap: pretty; }
 
-.hl:hover .hlt {
+/* The title is the way into the preview, so only the title link itself lights
+ * up: hovering a byline chip inks that chip and nothing else. */
+.hla:hover .hlt {
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
-
-.hl:hover .pv { opacity: 1; }
 
 .byline {
   display: flex;
@@ -205,27 +205,6 @@ img { max-width: 100%; }
   color: var(--body);
   text-wrap: pretty;
 }
-
-/* The "Preview" affordance: present for keyboard and touch, but only inked in
- * when the headline it belongs to is hovered. */
-.pv {
-  opacity: 0;
-  transition: opacity .15s;
-  display: inline-block;
-  font-family: var(--sans);
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  font-size: 9px;
-  color: var(--muted);
-  border: 0;
-  border-bottom: 1px solid var(--edge);
-  background: none;
-  padding: 0;
-  margin-top: 5px;
-  cursor: pointer;
-}
-
-.pv:focus-visible { opacity: 1; outline: 1px solid var(--ink); outline-offset: 2px; }
 
 .btn {
   display: inline-block;
@@ -328,9 +307,9 @@ img { max-width: 100%; }
 .col .photo { max-height: 340px; }
 .col-top .hlt { font-size: 20px; line-height: 1.13; font-weight: 700; }
 .col-top .dek { margin-top: 6px; font-size: 13.5px; line-height: 1.42; }
-.col-top .byline { margin-top: 6px; }
+.col-top .byline { margin-bottom: 6px; }
 .col-item .hlt { font-size: 16px; line-height: 1.16; font-weight: 700; }
-.col-item .byline { margin-top: 5px; }
+.col-item .byline { margin-bottom: 5px; }
 
 /* --- below the fold ----------------------------------------------------- */
 
@@ -364,7 +343,6 @@ img { max-width: 100%; }
   letter-spacing: -.012em;
 }
 .band-top .dek { margin-top: 10px; font-size: 15px; line-height: 1.45; }
-.band-top .pv { margin-top: 8px; }
 
 /* The stacked columns beside a band's lead. CSS columns rather than server-side
  * distribution: the count is a viewport question, and the server does not get
@@ -406,7 +384,7 @@ img { max-width: 100%; }
 .stacks .hl:first-child { border-top: 0; padding-top: 13px; }
 
 .stacks .hlt { font-size: 17.5px; line-height: 1.16; font-weight: 700; }
-.stacks .byline { margin-top: 5px; }
+.stacks .byline { margin-bottom: 5px; }
 
 /* --- the empty paper ---------------------------------------------------- */
 
@@ -516,7 +494,6 @@ img { max-width: 100%; }
                   letter-spacing: -.015em; text-wrap: pretty; }
 .drawer-body .photo { max-height: 440px; margin-top: 18px; }
 .drawer-body .dek { margin-top: 18px; font-size: 16px; line-height: 1.55; }
-.drawer-body .excerpt { margin-top: 14px; font-size: 16px; line-height: 1.55; color: var(--body); }
 .drawer-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 22px;
                   padding-top: 18px; border-top: 1px solid var(--rule); }
 .drawer-actions .btn { padding: 9px 14px; }
@@ -532,7 +509,7 @@ img { max-width: 100%; }
 /* Touch and e-ink: there is no hover, so the reveal-on-hover affordances would
  * be permanently invisible while still taking up their space. Ink them in. */
 @media (hover: none) {
-  .pv, .lead-actions { opacity: 1; }
+  .lead-actions { opacity: 1; }
 }
 
 @media (min-width: 620px) {
@@ -574,5 +551,5 @@ img { max-width: 100%; }
   body { background: #fff; }
   .wrap { padding: 0; }
   .paper { box-shadow: none; width: 100%; }
-  .nav, .pv, .lead-actions, .scrim { display: none !important; }
+  .nav, .lead-actions, .scrim { display: none !important; }
 }

@@ -171,7 +171,7 @@ def test_the_byline_is_not_nested_inside_the_headline_link():
     link."""
     html = site.render_edition(_build(_hn(), _article(1)))
     for card in html.split('<article class="hl')[1:]:
-        title_link = card.split('<a class="hla"')[1].split("</a>")[0]
+        title_link = card.split('<a class="hla pv-open"')[1].split("</a>")[0]
         assert "<a " not in title_link
 
 
@@ -325,3 +325,22 @@ async def test_a_row_the_store_never_typed_takes_the_kind_from_the_config(tmp_pa
 
 def test_raw_item_defaults_to_a_feed():
     assert RawItem(source="s", url="u", title="t").kind == "rss"
+
+
+def test_the_sources_sit_above_the_headline_and_the_title_opens_the_preview():
+    """On the web the byline is printed before the title on every card, the
+    title link is the way into the preview drawer, and there is no separate
+    Preview button to keep in step with it."""
+    html = site.render_edition(_build(_hn(), _article(1)))
+    assert "Preview</button>" not in html
+    for card in html.split('<article class="hl')[1:]:
+        card = card.split("</article>")[0]
+        assert card.index('class="byline') < card.index('class="hla pv-open"')
+
+
+def test_the_preview_shows_the_summary_and_not_the_opening_lines():
+    """The drawer's text is the summary alone; the article's own first
+    sentences stay on its page behind "Read the full text"."""
+    html = site.render_edition(_build(_hn(), _article(1)))
+    assert 'id="pv-dek"' in html
+    assert "excerpt" not in html

@@ -12,7 +12,6 @@
     title: document.getElementById("pv-title"),
     image: document.getElementById("pv-image"),
     dek: document.getElementById("pv-dek"),
-    excerpt: document.getElementById("pv-excerpt"),
     read: document.getElementById("pv-read"),
     links: document.getElementById("pv-links")
   };
@@ -28,8 +27,6 @@
     el.title.textContent = (card.querySelector(".hlt") || {}).textContent || "";
     el.dek.textContent = d.dek || "";
     el.dek.hidden = !d.dek;
-    el.excerpt.textContent = d.excerpt || "";
-    el.excerpt.hidden = !d.excerpt;
     if (d.image) { el.image.src = d.image; el.image.hidden = false; }
     else { el.image.removeAttribute("src"); el.image.hidden = true; }
     el.read.href = d.read || "#";
@@ -64,6 +61,9 @@
   document.addEventListener("click", function (e) {
     var btn = e.target.closest(".pv-open");
     if (btn) {
+      // The opener is the title link, whose href is the article itself. A
+      // modifier click means "open it in a tab": leave that to the browser.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
       e.preventDefault();
       open(btn.closest(".hl"));
       return;

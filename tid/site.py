@@ -30,7 +30,6 @@ TEMPLATES = Path(__file__).parent / "templates"
 # Words of the body shown in the preview drawer. Enough to tell whether the
 # piece is worth opening, short enough to keep the attribute small on a page
 # carrying a hundred of them.
-EXCERPT_WORDS = 45
 
 _FENCE_RE = re.compile(r"```[a-zA-Z0-9_+-]*\s*\n?(.*?)```", re.DOTALL)
 _INLINE_RE = re.compile(r"`([^`\n]+)`")
@@ -61,15 +60,6 @@ def human_time(iso: str) -> str:
         return datetime.fromisoformat(iso).strftime("%H:%M UTC")
     except ValueError:
         return ""
-
-
-def excerpt(body: str, words: int = EXCERPT_WORDS) -> str:
-    """The opening of an article, for the preview drawer."""
-    parts = (body or "").split()
-    if not parts:
-        return ""
-    text = " ".join(parts[:words])
-    return text + ("…" if len(parts) > words else "")
 
 
 def read_url(item: Item, edition_key: str = "") -> str:
@@ -162,7 +152,6 @@ def env() -> jinja2.Environment:
         human_date=human_date,
         short_date=short_date,
         human_time=human_time,
-        excerpt=excerpt,
         read_url=read_url,
         glyph=glyph,
         filter_glyph=filter_glyph,
