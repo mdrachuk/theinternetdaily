@@ -21,29 +21,30 @@
 {# One headline. `dek` decides whether the summary is printed under it; it
    travels in a data attribute either way, because the preview drawer shows it
    for every item and reads it out of the DOM rather than over the network.
-   The byline sits beside the title link rather than inside it: its chips are
-   links of their own, and an anchor cannot hold another. #}
+   The summary is all the drawer shows of the text: the article's own opening
+   lines belong on its page, behind "Read the full text".
+   The byline goes first, above the title, and sits beside the title link
+   rather than inside it: its chips are links of their own, and an anchor
+   cannot hold another. The title and the dek are the way into the preview
+   drawer — the link's href is the article itself, so a middle click, a
+   modifier click and a paper read with scripting off all still go straight
+   to the piece. #}
 {% macro headline(item, edition_key, cls="", tag="h3", dek=False, top=False, actions=False) -%}
 <article class="hl {{ cls }}"
          data-source="{{ item.source }}"
          data-url="{{ item.url }}"
          data-read="{{ item|read_url(edition_key) }}"
          data-dek="{{ item.dek }}"
-         data-image="{{ item.image or '' }}"
-         data-excerpt="{{ item.body|excerpt }}">
-  {%- if top %}{{ byline(item, top=True) }}{% endif %}
-  <a class="hla" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
+         data-image="{{ item.image or '' }}">
+  {{- byline(item, top=top) }}
+  <a class="hla pv-open" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
     <{{ tag }} class="hlt">{{ item.title }}</{{ tag }}>
     {%- if dek and item.dek %}<p class="dek">{{ item.dek }}</p>{% endif %}
   </a>
-  {%- if not top %}{{ byline(item) }}{% endif %}
   {%- if actions %}
   <div class="lead-actions">
     {{ open_buttons(item) }}
-    <button class="btn quiet pv-open" type="button">Preview</button>
   </div>
-  {%- else %}
-  <button class="pv pv-open" type="button">Preview</button>
   {%- endif %}
 </article>
 {%- endmacro %}

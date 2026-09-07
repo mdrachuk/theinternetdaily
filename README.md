@@ -290,9 +290,12 @@ only thing that genuinely bounds how many LLM jobs hit one GPU at a time.
 The columns are not fixed. They are named for each edition by reading it —
 see [Topics](#topics-the-sections-are-named-per-edition).
 
-Every headline is a link to the source, and every one has a **Preview** that
-opens the dek and the opening lines in a drawer, plus a link to the article's
-own page.
+Every headline sits under its byline — the source chips first, then the
+title. Clicking the title opens a **preview** drawer with the dek, a link to
+the article's own page and one button per place the piece can be opened;
+the chips in the byline go straight to those places. A middle or modifier
+click on the title, or a paper read with scripting off, goes straight to the
+source.
 
 **The article page** (`/e/{key}/a/{id}`) — the whole rewritten body, set in
 one measure with generous leading. Code fences and inline backticks come
