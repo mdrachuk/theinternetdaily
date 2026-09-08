@@ -2,7 +2,7 @@
 
 The paper *is* the website. Every article the pipeline gathered, summarized and
 rewrote is laid out as a front page with its continuation below the fold, and
-each one has a page of its own carrying the full rewritten text — no clicking
+each one has a page of its own carrying the full text — no clicking
 through to the source unless you want to.
 
 Routes:
@@ -17,9 +17,9 @@ Routes:
   GET  /healthz             liveness probe
   GET  /readyz              readiness probe (store + config)
   POST /ingest              manual kick, via the job queue: gather →
-                            summarize → rewrite → topics → a new edition
-  POST /prepare             the hourly job, on demand: gather → summarize →
-                            rewrite, into the store only
+                            summarize → topics → a new edition
+  POST /prepare             the hourly job, on demand: gather → summarize,
+                            into the store only
 
 Both edition routes take `?m=read|watch|listen` to show one medium only.
 
@@ -90,8 +90,8 @@ def start_scheduler(job, prepare=None) -> AsyncIOScheduler:
 
     The cron mode also honours INGEST_TIMEZONE (an IANA tz, default UTC).
 
-    `prepare`, when given, fills the store between editions — gather,
-    summarize, rewrite — every PREPARE_INTERVAL_SECONDS (default one hour,
+    `prepare`, when given, fills the store between editions — gather and
+    summarize — every PREPARE_INTERVAL_SECONDS (default one hour,
     0 to turn it off). It is what keeps the edition run short: by the time
     the paper is due, nearly everything in it is already written.
     """
@@ -225,7 +225,7 @@ def create_app(queue=None) -> FastAPI:
             counts, fetched_at = await store.counts(), await store.max_fetched_at()
         except Exception:
             counts, fetched_at = dict.fromkeys(
-                ("total", "rendered", "pending_summary", "pending_rewrite"), 0
+                ("total", "rendered", "pending_summary"), 0
             ), ""
         finally:
             await store.close()

@@ -29,7 +29,7 @@
         <a class="btn" href="{{ back }}">← Back to the edition</a>
         {{ open_buttons(item, cls="btn quiet") }}
       </div>
-      <p class="note small">Rewritten from {{ item.source }}{% if item.date %} · {{ item.date }}{% endif %}. Read it at the source if the rewrite lost something.</p>
+      <p class="note small">From {{ item.source }}{% if item.date %} · {{ item.date }}{% endif %}. Read it at the source if the extraction lost something.</p>
     </article>
 {% endblock %}
 

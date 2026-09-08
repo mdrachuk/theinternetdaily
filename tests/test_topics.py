@@ -251,7 +251,7 @@ async def _seeded_store(tmp_path, n=8):
             # Titles of differing length, because that is what the fake files on.
             title="Story " + "x" * i,
             source="Feed", text="raw text", summary=f"Summary {i}.",
-            body="Rewritten body.", published=f"2026-08-{10 + i:02d}",
+            published=f"2026-08-{10 + i:02d}",
         ))
     await store.upsert_rows(rows)
     return store
@@ -394,7 +394,7 @@ async def test_a_stale_topic_is_cleared_when_the_next_edition_is_named(
         # rather than being wiped for a paper that has no sections at all.
         assert all(r.topic for r in await store.pending_render())
 
-        # But a run that *does* name topics rewrites every row.
+        # But a run that *does* name topics re-files every row.
         def _one_topic(system: str, user: str) -> str:
             if "<candidate" in user:
                 return '{"topics": [{"name": "Ukraine", "blurb": "war"}]}'

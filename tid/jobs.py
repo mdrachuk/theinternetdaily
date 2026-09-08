@@ -212,7 +212,7 @@ async def _with_pipeline(name: str, work) -> None:
 
 
 async def prepare() -> None:
-    """gather → summarize → rewrite, and nothing else. The hourly job.
+    """gather → summarize, and nothing else. The hourly job.
 
     Leaves the store fuller and the site untouched: no topics, no edition, no
     hook. Whatever it writes waits in the store for the next `ingest`, which
@@ -225,7 +225,7 @@ async def prepare() -> None:
 
 
 async def ingest() -> None:
-    """gather → summarize → rewrite → topics → edition, then the delivery hook.
+    """gather → summarize → topics → edition, then the delivery hook.
 
     Topics run last inside `cmd_ingest` and before the edition is assembled,
     which is the only order that works: the stage reads the finished articles

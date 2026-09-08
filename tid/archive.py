@@ -7,7 +7,7 @@ every render, which costs microseconds and means an improvement to the front
 page reaches editions published last month too.
 
 Snapshots are what makes yesterday's paper still readable. The store keeps
-moving: a source is re-filed, a rewrite lands, a gather brings in fifty more
+moving: a source is re-filed, a summary lands, a gather brings in fifty more
 stories. Without a snapshot, "the edition of 12 August" would quietly become
 "whatever the store would produce for 12 August today", which is a different
 paper each time you open it.
@@ -150,7 +150,7 @@ def floor(cache_dir: Path) -> str | None:
 
     None is the normal answer: `rendered_at` already says which articles are
     unpublished, and an article that took three days to get through the
-    rewrite queue should still run when it is finally ready.
+    summary queue should still run when it is finally ready.
 
     The bound only applies when nothing has ever been published, where that
     reasoning would instead empty the entire store onto one front page.

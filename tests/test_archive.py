@@ -35,7 +35,7 @@ def _article(n: int, source: str = "Quanta",
         "url": f"https://quantamagazine.org/story-{n}",
         "title": f"Headline {n}",
         "summary": "Two sentences of lede. That is all it takes.",
-        "text": "A paragraph of rewritten body. " * 30,
+        "text": "A paragraph of the article. " * 30,
         "iso_date": "2026-08-12",
         "date": "Aug 12, 2026",
     }
@@ -119,7 +119,7 @@ def test_record_writes_a_readable_snapshot(cache):
     assert loaded is not None
     assert [i.title for i in loaded.items] == [i.title for i in built.items]
     # The full body survives the round trip; it is what the article page shows.
-    assert loaded.lead.body.startswith("A paragraph of rewritten body.")
+    assert loaded.lead.body.startswith("A paragraph of the article.")
 
 
 # --- where a first edition starts, and what it retires --------------------
@@ -127,7 +127,7 @@ def test_record_writes_a_readable_snapshot(cache):
 
 def test_floor_is_none_once_anything_has_been_published(cache):
     """Publication state alone decides. An article that spent three days in
-    the rewrite queue should still run when it is finally ready, so there is
+    the summary queue should still run when it is finally ready, so there is
     no window to age it out."""
     archive.record(cache, "a" * 24, "2026-08-12", [_article(0)])
     assert archive.floor(cache) is None
@@ -179,7 +179,7 @@ async def test_a_cleared_archive_publishes_the_window_not_the_whole_store(
         url = f"http://old.invalid/{title}"
         return ArticleRow(
             id=url_hash(url), url=url, title=title, source="Src",
-            text="body", summary="lede", body="rewritten",
+            text="body", summary="lede",
             fetched_at=(now - timedelta(hours=hours_ago))
                        .isoformat(timespec="seconds"),
         )
@@ -213,7 +213,7 @@ async def test_an_edition_is_not_snapshotted_while_an_ingest_runs(
     tmp_path, monkeypatch
 ):
     """A paper assembled halfway through an ingest would carry whatever had
-    finished rewriting at that moment and mark the rest published-but-absent.
+    finished summarizing at that moment and mark the rest published-but-absent.
     It still renders for the reader; it just does not become the record."""
     from tid import jobs
     from tid.store import ArticleRow, SqliteStore, url_hash
@@ -225,7 +225,7 @@ async def test_an_edition_is_not_snapshotted_while_an_ingest_runs(
     try:
         await store.upsert_rows([ArticleRow(
             id=url_hash(url), url=url, title="Mid Ingest", source="Src",
-            text="body", summary="lede", body="rewritten",
+            text="body", summary="lede",
             fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )])
         key = await jobs.current_key(store, sources)
@@ -273,7 +273,7 @@ async def test_article_page_carries_the_full_text(client, cache):
     r = await client.get(f"/e/{key}/a/{article_id}")
     assert r.status_code == 200
     assert "Headline 0" in r.text
-    assert "A paragraph of rewritten body." in r.text
+    assert "A paragraph of the article." in r.text
     assert f"/e/{key}" in r.text, "there must be a way back to the edition"
 
 
@@ -353,7 +353,7 @@ async def test_index_is_the_newest_snapshot_not_the_store(
     try:
         await store.upsert_rows([ArticleRow(
             id=url_hash(url), url=url, title="Fresh From The Hourly Gather",
-            source="Quanta", text="body", summary="lede", body="rewritten",
+            source="Quanta", text="body", summary="lede",
             fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )])
 

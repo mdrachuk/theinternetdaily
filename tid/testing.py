@@ -17,15 +17,11 @@ FAKE_LIMITS = BatchLimits(
     summarize_batch=4,
     summarize_max_chars=2000,
     summary_output_tokens=300,
-    rewrite_batch=2,
-    rewrite_max_chars=4000,
-    rewrite_output_tokens=2048,
     max_concurrent=2,
     max_output_tokens=4096,
 )
 
 _ARTICLE_ID_RE = re.compile(r"<article id=\"(\d+)\">")
-_MARKER_ID_RE = re.compile(r"=== ARTICLE (\d+) START ===")
 # The three topic-stage prompts, each with a marker of its own so the fake can
 # tell them apart the way the real backends' schemas do.
 _CANDIDATE_ID_RE = re.compile(r"<candidate id=\"(\d+)\">")
@@ -82,8 +78,6 @@ class FakeBackend:
             return self._respond(system, user)
         if _ARTICLE_ID_RE.search(user):
             return self._summaries(user, json_schema is not None)
-        if _MARKER_ID_RE.search(user):
-            return self._rewrites(user, json_schema is not None)
         if _CANDIDATE_ID_RE.search(user):
             return self._topics(json_schema is not None)
         if _HEADLINE_RE.search(user):
@@ -102,18 +96,6 @@ class FakeBackend:
                                for i in ids]}
             )
         return "\n".join(f"{i}. Summary of article {i}." for i in ids)
-
-    def _rewrites(self, user: str, as_json: bool) -> str:
-        ids = [int(i) for i in _MARKER_ID_RE.findall(user)]
-        body = "Rewritten paragraph one.\n\nRewritten paragraph two."
-        if as_json:
-            return json.dumps(
-                {"articles": [{"id": i, "body": body} for i in ids]}
-            )
-        return "\n\n".join(
-            f"=== ARTICLE {i} START ===\n{body}\n=== ARTICLE {i} END ==="
-            for i in ids
-        )
 
     # --- the topic stage ------------------------------------------------
 

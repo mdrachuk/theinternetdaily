@@ -55,8 +55,8 @@ def test_midword_tab_becomes_a_latex_t_command():
 
 
 def test_indentation_tabs_survive():
-    """Code blocks are the whole reason the rewrite prompt asks for fences;
-    turning their indentation into \\t would wreck them."""
+    """Code blocks arrive fenced; turning their indentation into \\t would
+    wreck them."""
     body = "```python\ndef f():\n\treturn 1\n```"
     assert repair_latex_escapes(body) == body
 

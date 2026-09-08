@@ -19,9 +19,9 @@ from typing import Any
 from .base import ArticleRow, norm_title, now_iso, url_hash
 
 _FIELDS = (
-    "url", "title", "title_norm", "source", "text", "body", "summary",
+    "url", "title", "title_norm", "source", "text", "summary",
     "surfaced", "published", "fetched_at", "extracted_at", "summarized_at",
-    "rewritten_at", "rendered_at", "image", "topic", "topic_order",
+    "rendered_at", "image", "topic", "topic_order",
     "main_rank", "kind", "extra",
 )
 
@@ -44,14 +44,12 @@ def _from_doc(doc: dict[str, Any]) -> ArticleRow:
         title_norm=doc.get("title_norm", ""),
         source=doc.get("source", ""),
         text=doc.get("text"),
-        body=doc.get("body"),
         summary=doc.get("summary"),
         surfaced=doc.get("surfaced"),
         published=doc.get("published"),
         fetched_at=doc.get("fetched_at", ""),
         extracted_at=doc.get("extracted_at"),
         summarized_at=doc.get("summarized_at"),
-        rewritten_at=doc.get("rewritten_at"),
         rendered_at=doc.get("rendered_at"),
         image=doc.get("image"),
         topic=doc.get("topic"),
@@ -98,11 +96,6 @@ class MongoStore:
             [("fetched_at", ASCENDING)],
             name="pending_summary",
             partialFilterExpression={"summary": None},
-        )
-        await self.col.create_index(
-            [("fetched_at", ASCENDING)],
-            name="pending_rewrite",
-            partialFilterExpression={"body": None},
         )
         self._indexed = True
 
@@ -176,18 +169,12 @@ class MongoStore:
             {"$set": {"sort_date": row.sort_date}},
         )
 
-    # --- summarize / rewrite --------------------------------------------
+    # --- summarize ------------------------------------------------------
 
     async def pending_summary(self) -> list[ArticleRow]:
-        return await self._pending("summary")
-
-    async def pending_rewrite(self) -> list[ArticleRow]:
-        return await self._pending("body")
-
-    async def _pending(self, field: str) -> list[ArticleRow]:
         await self.ensure_indexes()
         cursor = self.col.find(
-            {field: None, "text": {"$ne": None}}
+            {"summary": None, "text": {"$ne": None}}
         ).sort("fetched_at", 1)
         return [_from_doc(d) async for d in cursor]
 
@@ -195,12 +182,6 @@ class MongoStore:
         await self.col.update_one(
             {"_id": article_id},
             {"$set": {"summary": summary, "summarized_at": now_iso()}},
-        )
-
-    async def set_body(self, article_id: str, body: str) -> None:
-        await self.col.update_one(
-            {"_id": article_id},
-            {"$set": {"body": body, "rewritten_at": now_iso()}},
         )
 
     # --- topics ---------------------------------------------------------
@@ -228,23 +209,21 @@ class MongoStore:
         await self.ensure_indexes()
         cursor = self.col.find(
             {"rendered_at": None, "summary": {"$ne": None},
-             "text": {"$ne": None}, "body": {"$ne": None}}
+             "text": {"$ne": None}}
         )
         return [_from_doc(d) async for d in cursor]
 
     async def unpublished(
         self, source: str, floor: str | None = None
     ) -> list[ArticleRow]:
-        """Every finished — rewritten, not merely summarized — article for
-        `source` that no edition has carried yet. See the SQLite store for why
-        publication state is per-article rather than a timestamp comparison,
-        and why a pending rewrite waits for the next paper."""
+        """Every finished — extracted and summarized — article for `source`
+        that no edition has carried yet. See the SQLite store for why
+        publication state is per-article rather than a timestamp comparison."""
         await self.ensure_indexes()
         query: dict[str, Any] = {
             "source": source,
             "text": {"$ne": None},
             "summary": {"$ne": None},
-            "body": {"$ne": None},
             "rendered_at": None,
         }
         if floor is not None:
@@ -261,7 +240,6 @@ class MongoStore:
                 "rendered_at": None,
                 "text": {"$ne": None},
                 "summary": {"$ne": None},
-                "body": {"$ne": None},
                 "fetched_at": {"$lte": cutoff},
             },
             {"$set": {"rendered_at": date}},
@@ -292,11 +270,8 @@ class MongoStore:
             "pending_summary": await self.col.count_documents(
                 {"summary": None, "text": {"$ne": None}}
             ),
-            "pending_rewrite": await self.col.count_documents(
-                {"body": None, "text": {"$ne": None}}
-            ),
             "pending_render": await self.col.count_documents(
-                {"rendered_at": None, "body": {"$ne": None}, **ready}
+                {"rendered_at": None, **ready}
             ),
             "rendered": await self.col.count_documents(
                 {"rendered_at": {"$ne": None}}
