@@ -24,15 +24,13 @@ CREATE TABLE IF NOT EXISTS article (
     title          TEXT NOT NULL,
     title_norm     TEXT NOT NULL,
     source         TEXT NOT NULL,
-    text           TEXT,              -- NULL if extraction failed (raw trafilatura output)
-    body           TEXT,              -- NULL until rewritten (clean paragraphs)
+    text           TEXT,              -- NULL if extraction failed (trafilatura output, printed as is)
     summary        TEXT,              -- NULL until summarized
     surfaced       TEXT,              -- when the source surfaced it (HN submission / RSS pub)
     published      TEXT,              -- the article's own publication date (from page metadata)
     fetched_at     TEXT NOT NULL,
     extracted_at   TEXT,
     summarized_at  TEXT,
-    rewritten_at   TEXT,
     rendered_at    TEXT,              -- ISO date of first edition inclusion; NULL = pending
     image          TEXT,              -- lead image URL (feed enclosure or og:image)
     topic          TEXT,              -- NULL until the topic stage files it
@@ -47,9 +45,9 @@ CREATE INDEX IF NOT EXISTS idx_source_date ON article(source, published, surface
 """
 
 _COLUMNS = (
-    "url_hash", "url", "title", "title_norm", "source", "text", "body",
+    "url_hash", "url", "title", "title_norm", "source", "text",
     "summary", "surfaced", "published", "fetched_at", "extracted_at",
-    "summarized_at", "rewritten_at", "rendered_at", "image", "topic",
+    "summarized_at", "rendered_at", "image", "topic",
     "topic_order", "main_rank", "kind", "extra",
 )
 
@@ -59,9 +57,10 @@ _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM article"
 # Columns added after the first release, with the type they are declared as.
 # SQLite is dynamically typed, so the declaration only matters for ordering
 # comparisons — which `topic_order` and `main_rank` are used for.
+#
+# Columns are only ever added, never dropped: a store from the rewrite era
+# still carries `body` and `rewritten_at`, and nothing here reads them.
 _ADDED_COLUMNS = {
-    "body": "TEXT",
-    "rewritten_at": "TEXT",
     "surfaced": "TEXT",
     "published": "TEXT",
     "image": "TEXT",
@@ -118,14 +117,12 @@ def _row(r: sqlite3.Row) -> ArticleRow:
         title_norm=r["title_norm"],
         source=r["source"],
         text=r["text"],
-        body=r["body"],
         summary=r["summary"],
         surfaced=r["surfaced"],
         published=r["published"],
         fetched_at=r["fetched_at"],
         extracted_at=r["extracted_at"],
         summarized_at=r["summarized_at"],
-        rewritten_at=r["rewritten_at"],
         rendered_at=r["rendered_at"],
         image=r["image"],
         topic=r["topic"],
@@ -249,18 +246,12 @@ class SqliteStore:
 
         await self._run(_w)
 
-    # --- summarize / rewrite --------------------------------------------
+    # --- summarize ------------------------------------------------------
 
     async def pending_summary(self) -> list[ArticleRow]:
-        return await self._pending("summary")
-
-    async def pending_rewrite(self) -> list[ArticleRow]:
-        return await self._pending("body")
-
-    async def _pending(self, column: str) -> list[ArticleRow]:
         def _q() -> list[ArticleRow]:
             cur = self.con.execute(
-                f"{_SELECT} WHERE {column} IS NULL AND text IS NOT NULL "
+                f"{_SELECT} WHERE summary IS NULL AND text IS NOT NULL "
                 "ORDER BY fetched_at ASC"
             )
             return [_row(r) for r in cur.fetchall()]
@@ -269,9 +260,6 @@ class SqliteStore:
 
     async def set_summary(self, article_id: str, summary: str) -> None:
         await self._set("summary", "summarized_at", article_id, summary)
-
-    async def set_body(self, article_id: str, body: str) -> None:
-        await self._set("body", "rewritten_at", article_id, body)
 
     # --- topics ---------------------------------------------------------
 
@@ -309,8 +297,7 @@ class SqliteStore:
         def _q() -> list[ArticleRow]:
             cur = self.con.execute(
                 f"{_SELECT} WHERE rendered_at IS NULL "
-                "AND summary IS NOT NULL AND text IS NOT NULL "
-                "AND body IS NOT NULL"
+                "AND summary IS NOT NULL AND text IS NOT NULL"
             )
             return [_row(r) for r in cur.fetchall()]
 
@@ -322,18 +309,16 @@ class SqliteStore:
         """Every finished article for `source` that no edition has carried
         yet, newest first by best available date.
 
-        Finished means rewritten, not merely summarized. The paper's whole
-        premise is the cleaned-up, translated body rather than whatever
-        trafilatura scraped, and publishing marks an article done — so going
-        out early with raw text is not "a bit rough this edition", it is that
-        article's only appearance. A rewrite still in the queue simply waits
-        for the next paper.
+        Finished means extracted and summarized: the text is printed as the
+        page gave it, and the summary is the dek. Publishing marks an article
+        done — it is that article's only appearance — so one still waiting on
+        its summary simply waits for the next paper.
 
         Publication state is per-article — `rendered_at`, stamped when an
         edition snapshots the article — and not a timestamp comparison. That
         distinction is the whole point: one gather stamps every row it writes
         with the same `fetched_at` second, but those rows finish summarizing
-        and rewriting at very different times. A cutoff of "newer than the last
+        at very different times. A cutoff of "newer than the last
         edition's high-water mark" silently drops every article that was still
         in the pipeline when that edition went out, because it shares its
         second with articles that made it.
@@ -349,7 +334,6 @@ class SqliteStore:
                  WHERE source = ?1
                    AND text        IS NOT NULL
                    AND summary     IS NOT NULL
-                   AND body        IS NOT NULL
                    AND rendered_at IS NULL
                    AND (?2 IS NULL OR fetched_at > ?2)
                  ORDER BY COALESCE(published, surfaced, fetched_at) DESC
@@ -377,7 +361,6 @@ class SqliteStore:
                  WHERE rendered_at IS NULL
                    AND text     IS NOT NULL
                    AND summary  IS NOT NULL
-                   AND body     IS NOT NULL
                    AND fetched_at <= ?
                 """,
                 (date, cutoff),
@@ -416,8 +399,7 @@ class SqliteStore:
                 "total":            c("SELECT COUNT(*) FROM article").fetchone()[0],
                 "unreadable":       c("SELECT COUNT(*) FROM article WHERE text IS NULL").fetchone()[0],
                 "pending_summary":  c("SELECT COUNT(*) FROM article WHERE summary IS NULL AND text IS NOT NULL").fetchone()[0],
-                "pending_rewrite":  c("SELECT COUNT(*) FROM article WHERE body    IS NULL AND text IS NOT NULL").fetchone()[0],
-                "pending_render":   c("SELECT COUNT(*) FROM article WHERE rendered_at IS NULL AND summary IS NOT NULL AND text IS NOT NULL AND body IS NOT NULL").fetchone()[0],
+                "pending_render":   c("SELECT COUNT(*) FROM article WHERE rendered_at IS NULL AND summary IS NOT NULL AND text IS NOT NULL").fetchone()[0],
                 "rendered":         c("SELECT COUNT(*) FROM article WHERE rendered_at IS NOT NULL").fetchone()[0],
             }
 
@@ -440,13 +422,11 @@ class SqliteStore:
                 VALUES ({', '.join('?' * len(_COLUMNS))})
                 ON CONFLICT(url_hash) DO UPDATE SET
                     text          = COALESCE(excluded.text, text),
-                    body          = COALESCE(excluded.body, body),
                     summary       = COALESCE(excluded.summary, summary),
                     surfaced      = COALESCE(excluded.surfaced, surfaced),
                     published     = COALESCE(excluded.published, published),
                     extracted_at  = COALESCE(excluded.extracted_at, extracted_at),
                     summarized_at = COALESCE(excluded.summarized_at, summarized_at),
-                    rewritten_at  = COALESCE(excluded.rewritten_at, rewritten_at),
                     rendered_at   = COALESCE(excluded.rendered_at, rendered_at),
                     image         = COALESCE(excluded.image, image),
                     topic         = COALESCE(excluded.topic, topic),
@@ -458,9 +438,9 @@ class SqliteStore:
                 [
                     (
                         r.id, r.url, r.title, r.title_norm, r.source, r.text,
-                        r.body, r.summary, r.surfaced, r.published,
+                        r.summary, r.surfaced, r.published,
                         r.fetched_at, r.extracted_at, r.summarized_at,
-                        r.rewritten_at, r.rendered_at, r.image, r.topic,
+                        r.rendered_at, r.image, r.topic,
                         r.topic_order, r.main_rank,
                         r.kind or None, _dump_extra(r.extra),
                     )

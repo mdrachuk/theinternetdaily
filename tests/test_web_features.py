@@ -248,3 +248,75 @@ async def test_no_hook_means_no_subprocess(clean_env, hook_env):
         run_hook.stop()
         for p in patches:
             p.stop()
+
+
+# --- the hourly prepare job ------------------------------------------------
+#
+# The store is filled every hour and the site must not notice: an article is
+# news when an edition is assembled, not when a gather happens to land.
+
+async def test_prepare_is_scheduled_hourly_by_default(clean_env, monkeypatch):
+    monkeypatch.delenv("PREPARE_INTERVAL_SECONDS", raising=False)
+    sched = web.start_scheduler(_noop, _noop)
+    try:
+        by_id = {j.id: j for j in sched.get_jobs()}
+        assert set(by_id) == {"ingest", "prepare"}
+        assert "interval[1:00:00]" in str(by_id["prepare"].trigger)
+        assert by_id["prepare"].next_run_time is not None
+    finally:
+        sched.shutdown(wait=False)
+
+
+async def test_prepare_can_be_turned_off(clean_env, monkeypatch):
+    monkeypatch.setenv("PREPARE_INTERVAL_SECONDS", "0")
+    sched = web.start_scheduler(_noop, _noop)
+    try:
+        assert [j.id for j in sched.get_jobs()] == ["ingest"]
+    finally:
+        sched.shutdown(wait=False)
+
+
+async def test_prepare_fills_the_store_and_publishes_nothing(clean_env, hook_env):
+    """No topics, no snapshot, no hook — the store is the only thing that
+    moves. Otherwise the front page would gain an edition every hour."""
+    _, hook, hook_log, _ = hook_env
+    os.environ["POST_INGEST_HOOK"] = str(hook)
+    patches = _stubbed_ingest()
+    prepare = mock.patch.object(
+        jobs, "cmd_prepare", new=mock.AsyncMock(return_value=0)
+    )
+    for p in patches:
+        p.start()
+    prepared = prepare.start()
+    try:
+        await jobs.prepare()
+        prepared.assert_awaited_once()
+        jobs.cmd_ingest.assert_not_awaited()
+        jobs.build_edition_for_key.assert_not_awaited()
+        assert not hook_log.exists(), "the hook is for editions only"
+        assert jobs.running() is None
+    finally:
+        prepare.stop()
+        for p in patches:
+            p.stop()
+
+
+async def test_post_prepare_enqueues_the_prepare_job(clean_env):
+    class _Queue:
+        def __init__(self):
+            self.calls = []
+
+        async def enqueue(self, job, *args, job_id=None):
+            self.calls.append((job, job_id))
+
+        async def close(self):
+            pass
+
+    q = _Queue()
+    app = web.create_app(queue=q)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t"
+    ) as c:
+        r = await c.post("/prepare")
+    assert r.status_code == 202 and r.json() == {"status": "started"}
+    assert q.calls == [("prepare", "prepare")]

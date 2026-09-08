@@ -10,12 +10,12 @@ choices first and focus past the visual noise.
 I much prefer reading the way a LaTeX paper or an old magazine looks: quiet
 typography, generous margins, no color, nothing competing for attention.
 
-**The Internet Daily** is the fix. A script pulls all those feeds, has Claude clean
-up, translate to English, and rewrite the article bodies — the **full
-text**, not just summaries — and lays the result out as one consistently
-typeset newspaper: a front page with a lead story, section columns, and every
-article continued below the fold. Each headline has a page of its own carrying
-the whole rewritten text. Every article is *in* the paper; you read entirely
+**The Internet Daily** is the fix. A script pulls all those feeds, extracts
+each article's **full text**, has a model write a two-sentence summary for
+it, and lays the result out as one consistently typeset newspaper: a front
+page with a lead story, section columns, and every article continued below
+the fold. Each headline has a page of its own carrying the whole text, as the
+source published it. Every article is *in* the paper; you read entirely
 within it, no clicking through, no opening tabs.
 
 A side benefit I didn't expect to like but very much do: one place to read
@@ -61,7 +61,7 @@ $EDITOR tid/templates/style.css
 docker compose up --build -d
 
 # Open http://localhost:8000
-# The first edition assembles on demand. Background ingest runs every 4h.
+# The store fills every hour; an edition is assembled from it every 4h.
 ```
 
 Everything you'd normally want to change is in **two files**:
@@ -77,11 +77,9 @@ Everything you'd normally want to change is in **two files**:
 
 Optional but useful:
 
-- **`tid/summarize.py`** + **`tid/rewrite.py`** — the LLM
-  system prompts. When using Anthropic, change `ANTHROPIC_MODEL` to
-  `claude-sonnet-4-6` for fancier rewrites at ~10× the cost; adjust
-  `_SYSTEM` to change the editorial voice (e.g. disable the
-  auto-translate-to-English rule).
+- **`tid/summarize.py`** — the LLM system prompt. When using Anthropic,
+  change `ANTHROPIC_MODEL` to `claude-sonnet-4-6` for fancier summaries at
+  ~10× the cost; adjust `_SYSTEM` to change the editorial voice.
 - **`tid/wiki.py`** — what goes into the World news block and the
   Quote-of-the-day source.
 
@@ -138,10 +136,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Then visit `http://localhost:8000` — that is the paper. The first edition
-assembles on demand (a store read and a JSON write, so it is instant); the
-articles in it appear as ingest works through them, which takes a few minutes
-on a cold store.
+Then visit `http://localhost:8000` — that is the paper. It is empty until the
+first edition is assembled, which the scheduler does on its own; to have one
+now, `curl -X POST http://localhost:8000/ingest` and give it a few minutes on
+a cold store.
 
 State lives in `./data/state.db` (bind-mounted from the host) so it survives
 container restarts.
@@ -223,8 +221,9 @@ OLLAMA_MODEL=qwen2.5:3b                    # default: mistral
 OLLAMA_TIMEOUT=1800                        # seconds; increase for slow hardware
 ```
 
-**Model recommendations:** The rewrite step is token-heavy — aim for a model
-that balances speed and quality for your hardware.
+**Model recommendations:** the model only writes summaries and names
+topics, so a small, fast one does — aim for whatever your hardware runs
+comfortably.
 
 | Model | VRAM | Notes |
 |-------|------|-------|
@@ -297,12 +296,12 @@ the chips in the byline go straight to those places. A middle or modifier
 click on the title, or a paper read with scripting off, goes straight to the
 source.
 
-**The article page** (`/e/{key}/a/{id}`) — the whole rewritten body, set in
-one measure with generous leading. Code fences and inline backticks come
-through in monospace; TeX (`$x = y$`, `$$\int f$$`, `\(...\)`, `\[...\]`)
-renders through MathJax, which is loaded *only* on pages that contain some.
-All non-English source content is translated to English during the rewrite
-step; you can disable that in the prompt if you don't want it.
+**The article page** (`/e/{key}/a/{id}`) — the whole body as extracted from
+the source, set in one measure with generous leading. Code fences and inline
+backticks come through in monospace; TeX (`$x = y$`, `$$\int f$$`,
+`\(...\)`, `\[...\]`) renders through MathJax, which is loaded *only* on
+pages that contain some. Articles appear in the language they were written
+in; nothing is rewritten or translated.
 
 **The subscriptions page** (`/sources`) — every feed with its fallback
 section, its medium, how far back it gathers and how much it contributed to
@@ -336,10 +335,6 @@ as it was published.
        └───┬─────┘               │
            ▼                     │
        ┌─────────┐               │
-       │ rewrite │ ─── LLM       │
-       └───┬─────┘               │
-           ▼                     │
-       ┌─────────┐               │
        │ topics  │ ─── LLM       │
        └───┬─────┘               │
            ▼
@@ -360,39 +355,42 @@ as it was published.
         the paper
 ```
 
-Six stages. The first five are idempotent and resumable; the sixth is
+Five stages. The first four are idempotent and resumable; the fifth is
 pure and runs per request:
 
 1. **gather** — pulls new items from each source, runs `trafilatura` to
    extract the article body, stores the raw text. Pure I/O — no LLM cost.
 2. **summarize** — batches up to 8 articles per LLM call and produces a
-   ≤40-word two-sentence summary for each (used as the lede in the front
-   matter and in the contents listing).
-3. **rewrite** — batches up to 8 articles per LLM call and produces a
-   clean, properly-paragraphed, translated-to-English version of each
-   article body for the renderer. Preserves code fences and `$math$` exactly.
-4. **topics** — reads the whole set of articles that will be in the next
+   ≤40-word two-sentence summary for each (the dek under the headline). The
+   body itself is never sent back through a model: the article page prints
+   the extracted text as the source published it.
+3. **topics** — reads the whole set of articles that will be in the next
    edition and decides what its sections are. Three passes:
    one call names the topics, one call per article files it under the most
    specific one, one call per topic picks that topic's main stories. See
    [Topics](#topics-the-sections-are-named-per-edition).
-5. **assemble** — pulls every ready article no previous edition carried, from
+4. **assemble** — pulls every ready article no previous edition carried, from
    every source, writes them to a snapshot keyed by a hash of "what's in the
    store" + "what's in sources.toml", and stamps `rendered_at` on each one so
    the next edition knows to skip it. This is cheap: a store read and a JSON
-   write, no LLM and no typesetting, which is why it happens inline on a cache
-   miss rather than through the queue.
-6. **lay out** — `tid/edition.py` turns that flat list into a front page:
+   write, no LLM and no typesetting. It is also the only moment an article
+   becomes visible: the site serves the newest snapshot, never the live store.
+5. **lay out** — `tid/edition.py` turns that flat list into a front page:
    which story leads, which two go beside it, what each column holds, what
    continues below. It is pure and it runs per request, so the layout is
    *not* stored — an improvement to the front page reaches editions published
    last month too.
 
-A background `APScheduler` job (`AsyncIOScheduler`, on the app's event loop)
-runs steps 1–4 every 4 hours (configurable). Each ingest ends by assembling
-the edition and caching its source marks, so the archive entry exists — and
-the paper loads without a single outbound request — whether or not anyone
-visits.
+Two background `APScheduler` jobs (`AsyncIOScheduler`, on the app's event
+loop) drive this. **`prepare`** runs steps 1–2 every hour: it fills the store
+with gathered and summarized articles and changes nothing a reader can see.
+**`ingest`** runs on the edition schedule (every 4 hours by default, or at
+fixed times): steps 1–2 again — by now a handful of stragglers — then
+topics over the whole unpublished set, then the edition, its source marks and
+the delivery hook. Splitting the work this way keeps the edition run short
+and, on a local GPU, spreads a day's model time across the day; the archive
+entry exists — and the paper loads without a single outbound request — whether
+or not anyone visits.
 
 ## HTTP endpoints
 
@@ -400,7 +398,7 @@ visits.
 |---------------------------|----------------------------------------------------|
 | `GET /`                   | the current edition                                |
 | `GET /e/{key}`            | one edition from the archive, exactly as published |
-| `GET /e/{key}/a/{id}`     | one article's full rewritten text                  |
+| `GET /e/{key}/a/{id}`     | one article's full text                            |
 | `GET /a/{id}`             | the same, resolved in the current edition          |
 | `GET /sources`            | the subscription list                              |
 | `GET /sources.json`       | the same, as JSON                                  |
@@ -408,7 +406,8 @@ visits.
 | `GET /icon/{domain}.png`  | a source mark, fetched once and cached on disk     |
 | `GET /healthz`            | liveness probe (returns `ok`)                      |
 | `GET /readyz`             | readiness probe — pings the store, parses config   |
-| `POST /ingest`            | manual kick of gather → summarize → rewrite → topics |
+| `POST /ingest`            | manual kick: gather → summarize → topics → a new edition |
+| `POST /prepare`           | the hourly job, on demand: fill the store, publish nothing |
 
 Both edition routes take `?m=read`, `?m=watch` or `?m=listen` to show one
 medium only; the whole edition is laid out again from what is left, so a
@@ -422,7 +421,7 @@ to `/`.
 Every assembled edition writes a snapshot — `archive/cache/{key}.json` — with
 the articles it was built from, bodies included. That is what makes yesterday's
 paper still yesterday's paper: the store keeps moving underneath it (a
-source is re-filed, a rewrite lands, a gather brings in fifty more stories),
+source is re-filed, a summary lands, a gather brings in fifty more stories),
 and without a snapshot "the edition of 12 August" would quietly become
 "whatever the store would produce for 12 August today".
 
@@ -430,8 +429,8 @@ Which articles an edition carried is not recorded in the snapshot: the store
 stamps `rendered_at` on each one as it is published. "Has this run yet" is
 therefore a fact about the article, not a window that has to be reconstructed
 — which matters because one gather stamps every row it writes with the same
-`fetched_at` second, while those rows finish summarizing and rewriting at very
-different times. A cutoff of "newer than the last edition" would silently drop
+`fetched_at` second, while those rows finish summarizing at very different
+times. A cutoff of "newer than the last edition" would silently drop
 every article still in the pipeline when that edition went out.
 
 Nothing is ever deleted. An edition stays at `/e/{key}` for as long as its
@@ -552,7 +551,7 @@ since_hours = 168   # one week
 ### How big an edition gets
 
 There is no per-source cap. Every article a feed has filed since the last sync
-is fetched, rewritten and given its own page, and the front page carries all of
+is fetched, summarized and given its own page, and the front page carries all of
 them — the top of each section above the fold, the rest below it.
 
 Two things bound an edition, and neither is a count:
@@ -564,11 +563,11 @@ Two things bound an edition, and neither is a count:
 - **Publication state, at assemble time.** Every article an edition carries is
   stamped `rendered_at`, and the next edition takes what is still unstamped.
   So an article runs in exactly one edition: the first one published after it
-  is *finished* — summarized **and** rewritten — which is not the same as the
-  first one after it was gathered. Rewriting a whole feed through a local
-  model takes longer than one edition's worth of patience, and a story still
-  in the queue when the paper goes out simply runs in the next one rather than
-  going out with raw scraped text it would never get to replace.
+  is *finished* — extracted **and** summarized — which is not the same as the
+  first one after it was gathered. Summarizing a whole feed through a local
+  model can take longer than one edition's worth of patience, and a story
+  still in the queue when the paper goes out simply runs in the next one
+  rather than going out under a bare headline.
 
 The one exception is an install with no published history at all — a fresh
 setup, or an archive that has been cleared. The store never deletes rows, so
@@ -677,14 +676,25 @@ docker compose exec tid tid topics
 **What it costs.** One call for the edition, one per article, one per topic —
 so an edition of 50 articles is ~59 calls, but all of them are small: a
 headline and a 40-word summary in, a topic name out. The bodies never leave
-the store. On Haiku that is a fraction of what the rewrite stage costs for the
-same edition. On a local 12B model the topic-naming prompt is the one that
+the store. On a local 12B model the topic-naming prompt is the one that
 scales with the size of the edition, so `BatchLimits.topic_max_articles` caps
 it at the 60 newest headlines (`VLLM_LIMITS`) to stay inside a 16k window.
 
-## Scheduling ingests
+## Scheduling
 
-Two modes; pick whichever fits your routine. Set the env var in `.env`.
+Two jobs. The **edition** (`ingest`) runs on the schedule below; the **store
+fill** (`prepare`) runs every hour in between, gathering, summarizing and
+summarizing whatever the sources have published since the last look. Nothing
+`prepare` writes reaches the site — the front page is the newest edition, not
+the store — so the hourly runs only mean that when the edition is due, its
+articles are already written and the run takes minutes rather than an hour.
+
+```bash
+# .env
+PREPARE_INTERVAL_SECONDS=3600   # the default; 0 turns the hourly fill off
+```
+
+For the edition, two modes; pick whichever fits your routine.
 
 ### Every N hours (default)
 
@@ -705,10 +715,11 @@ If both are set, `INGEST_SCHEDULE` wins. Either way the run ends with the
 edition assembled and its source marks cached, so the paper loads instantly
 between scheduled runs.
 
-You can also kick a manual ingest any time:
+You can also kick either job by hand:
 
 ```bash
-curl -X POST http://localhost:8000/ingest
+curl -X POST http://localhost:8000/ingest    # a new edition, now
+curl -X POST http://localhost:8000/prepare   # fill the store, publish nothing
 ```
 
 ## Delivery — do something with each new edition
@@ -718,7 +729,7 @@ A built-in hook fires after every successful ingest. Point
 the script into your `./data/hooks/` directory so it survives rebuilds via
 the bind mount). The hook receives the path of the freshly-written **edition
 snapshot** as its first argument — JSON, with every article's title, source,
-URL, summary and full rewritten body.
+URL, summary and full text.
 
 ```bash
 # .env
@@ -774,7 +785,7 @@ uv run pytest
 ```
 
 `tests/test_e2e_offline.py` runs the whole pipeline — gather → extract →
-summarize → rewrite → edition → LaTeX — with HTTP served by
+summarize → topics → edition → LaTeX — with HTTP served by
 `httpx.MockTransport` and the model replaced by `tid.testing.FakeBackend`,
 so it needs no network, no GPU and no API key. The xelatex step runs too, but
 only where xelatex is installed.
@@ -790,21 +801,21 @@ compressed-tensors) at `--max-model-len 16384 --max-num-seqs 4
 |---|---|---|---|---|---|---|
 | gather + extract | 61 s | 45 | — | — | — | — |
 | summarize | 38 s | 44 | 11 | 29 147 | 2 252 | 59.9 |
-| rewrite | 807 s | 44 | 44 | 93 147 | 66 699 | 82.6 |
+| rewrite (since removed) | 807 s | 44 | 44 | 93 147 | 66 699 | 82.6 |
 | cover decorations | ~6 s | — | 1 | — | — | — |
 | render (xelatex, 142 pp.) | ~7 s | 41 | — | — | — | — |
 
-**~15 minutes for a full edition, entirely local, no API key present on the
-box.** Weights take 8.3 GiB, leaving 8.9 GiB of KV cache (139 374 tokens);
-peak VRAM was 18.4 GiB of 20.0, the card sat at its 70 W cap and 73 °C, and
-vLLM held 4 concurrent sequences for most of the run. Engine start is ~53 s
-(40 s of it compilation), so keep the server up between editions.
+That run still had a rewrite stage, which was the whole cost: ~15 minutes for
+an edition, of which 13 were rewriting bodies. The stage is gone — bodies are
+printed as extracted — so the same edition is now the summarize row plus
+topics, a couple of minutes, entirely local, no API key present on the box.
+Weights take 8.3 GiB, leaving 8.9 GiB of KV cache (139 374 tokens); peak VRAM
+was 18.4 GiB of 20.0, the card sat at its 70 W cap and 73 °C, and vLLM held 4
+concurrent sequences for most of the run. Engine start is ~53 s (40 s of it
+compilation), so keep the server up between editions.
 
-Quality on that run: 0 empty summaries, 0 empty bodies, 0 `tex_body` failures,
-median summary 31 words (the prompt caps it at 40, and nothing exceeded it).
-No article lost math — 41 of 44 came back with exactly the delimiters they went
-in with, and the other 3 *gained* correct ones where `trafilatura` had
-flattened them (`$\alpha$`, `$\mathbb{R}^2$`).
+Quality on that run: 0 empty summaries, median summary 31 words (the prompt
+caps it at 40, and nothing exceeded it).
 
 Two scripts cover what a test suite cannot:
 
@@ -832,10 +843,11 @@ export ANTHROPIC_API_KEY=sk-ant-...   # or: export LLM_BACKEND=ollama OLLAMA_HOS
 
 uv run tid gather       # fetch + extract
 uv run tid summarize    # LLM pass 1 (batched)
-uv run tid rewrite      # LLM pass 2 (batched)
-uv run tid topics       # LLM pass 3: name the edition's sections and file it
+uv run tid topics       # LLM pass 2: name the edition's sections and file it
 uv run tid render       # xelatex → PDF
-# or all of the above in sequence:
+# or in sequence: the first two (what the hourly job runs) …
+uv run tid prepare
+# … or all of the above:
 uv run tid build
 ```
 
@@ -886,7 +898,6 @@ typography instead, that is still
 with ~50 articles:
 
 - Summarize: 6 batched calls (~8 articles each)
-- Rewrite: 6 batched calls
 - Topics: 1 call for the edition + 1 per article + 1 per topic (~57), all of
   them small — a headline and a 40-word summary in, a topic name out
 - World-news compress: 1 call
@@ -914,7 +925,7 @@ can't surprise you above whatever you set.
 - MathJax loads from jsDelivr, and only on article pages whose body actually
   contains TeX.
 - With `LLM_BACKEND=anthropic`: article text is sent to the Anthropic API
-  for summarization and rewriting. That's the only outbound destination for
+  for summarization and topics. That's the only outbound destination for
   content (besides fetching the feeds themselves).
 - With `LLM_BACKEND=ollama`: nothing leaves your machine. All inference
   runs locally.
@@ -938,7 +949,6 @@ theinternetdaily/
 │   ├── llm.py            # LLMBackend protocol: Anthropic / vLLM / Ollama
 │   ├── testing.py        # FakeBackend, so CI needs no GPU or API key
 │   ├── summarize.py      # summarization prompts + batching
-│   ├── rewrite.py        # rewrite prompts + batching
 │   ├── topics.py         # name the edition's topics, file it, pick the mains
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
 │   ├── config.py         # env-derived configuration (read per call)
@@ -971,7 +981,7 @@ theinternetdaily/
 │   └── template.tex.j2   # the PDF, for `tid render`
 ├── scripts/
 │   ├── benchmark.py      # per-stage timing, tokens/s, peak VRAM
-│   └── quality_diff.py   # quality report per backend, incl. markup checks
+│   └── quality_diff.py   # summary quality report per backend
 ├── sources.toml          # configured feeds
 ├── pyproject.toml
 ├── Dockerfile

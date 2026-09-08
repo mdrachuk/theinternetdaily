@@ -19,7 +19,6 @@ from pathlib import Path
 
 from tid.cli import (
     cmd_gather,
-    cmd_rewrite,
     cmd_summarize,
     cmd_topics,
     collect_current_edition,
@@ -155,11 +154,6 @@ async def main() -> int:
             async with Stage("summarize", backend.usage) as st:
                 await cmd_summarize(store, backend, args.workers)
             rows.append(st.row(pending_summary))
-
-            pending_rewrite = len(await store.pending_rewrite())
-            async with Stage("rewrite", backend.usage) as st:
-                await cmd_rewrite(store, backend, args.workers)
-            rows.append(st.row(pending_rewrite))
 
             # Counted before the stage runs, like the others: this is the set
             # of articles the topic passes will read, file and rank.

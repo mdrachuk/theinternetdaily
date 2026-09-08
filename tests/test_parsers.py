@@ -1,12 +1,12 @@
 """Batch-protocol parser regressions.
 
-Both stages send N articles in one call and match the replies back up by
-position or id. When that mapping goes wrong the failure is silent and ugly:
-article 3 gets article 5's body. These fixtures pin the behaviour for good
-replies, for both wire formats, and — the part that matters with a 12B model —
-for the many ways a reply can be malformed.
+The summary stage sends N articles in one call and matches the replies back
+up by position or id. When that mapping goes wrong the failure is silent and
+ugly: article 3 gets article 5's summary. These fixtures pin the behaviour for
+good replies, for both wire formats, and — the part that matters with a 12B
+model — for the many ways a reply can be malformed.
 
-The contract, for either parser:
+The contract:
   * always returns exactly n items
   * never raises
   * an item the model got wrong comes back as "" (the caller counts it as an
@@ -18,17 +18,7 @@ import json
 
 import pytest
 
-from tid.rewrite import parse_rewrites
 from tid.summarize import parse_summaries
-
-BODY = "First paragraph.\n\nSecond paragraph."
-
-
-def _markers(*bodies: tuple[int, str]) -> str:
-    return "\n\n".join(
-        f"=== ARTICLE {i} START ===\n{b}\n=== ARTICLE {i} END ==="
-        for i, b in bodies
-    )
 
 
 # --- summaries: the good paths -------------------------------------------
@@ -96,56 +86,3 @@ def test_json_takes_precedence_but_falls_back_when_it_is_empty():
     reply = '{"summaries": []}\n0. one\n1. two'
     assert parse_summaries(reply, 2) == ["one", "two"]
 
-
-# --- rewrites: the good paths --------------------------------------------
-
-def test_markers_preserve_internal_blank_lines():
-    assert parse_rewrites(_markers((0, BODY)), 1) == [BODY]
-
-
-def test_markers_for_a_multi_article_batch():
-    out = parse_rewrites(_markers((0, "a"), (1, "b")), 2)
-    assert out == ["a", "b"]
-
-
-def test_rewrite_json_protocol_keeps_newlines():
-    reply = json.dumps({"articles": [{"id": 0, "body": BODY}]})
-    assert parse_rewrites(reply, 1) == [BODY]
-
-
-def test_rewrite_json_keeps_a_fenced_code_block_intact():
-    """render.py depends on this exactly: a fence that loses its newlines
-    stops being a code block and the PDF is wrong."""
-    body = "Run it:\n\n```bash\ncd /tmp\nls -la\n```\n\nDone."
-    reply = json.dumps({"articles": [{"id": 0, "body": body}]})
-    assert parse_rewrites(reply, 1) == [body]
-
-
-def test_rewrite_json_passes_math_delimiters_through_untouched():
-    body = "The area scales like $r^2$, and $$e^{i\\pi} + 1 = 0$$ still holds."
-    reply = json.dumps({"articles": [{"id": 0, "body": body}]})
-    assert parse_rewrites(reply, 1) == [body]
-
-
-# --- rewrites: the bad paths ---------------------------------------------
-
-@pytest.mark.parametrize("reply", [
-    "",
-    "Here is the rewritten article: hello",          # no markers at all
-    "=== ARTICLE 0 START ===\nunterminated",         # missing END
-    "=== ARTICLE 0 START ===\nbody\n=== ARTICLE 1 END ===",  # mismatched ids
-    '{"articles": [{"id": 0}]}',
-    '{"articles": "nope"}',
-    "{ truncated",
-])
-def test_malformed_rewrite_replies_yield_blanks_not_exceptions(reply):
-    assert parse_rewrites(reply, 1) == [""]
-
-
-def test_one_missing_article_in_a_batch_leaves_only_that_one_pending():
-    out = parse_rewrites(_markers((0, "a"), (2, "c")), 3)
-    assert out == ["a", "", "c"]
-
-
-def test_marker_ids_beyond_the_batch_are_ignored():
-    assert parse_rewrites(_markers((9, "stray")), 1) == [""]

@@ -40,7 +40,7 @@ FRONT_SECTIONS = 4
 FRONT_REST = 3
 
 # Words per minute for the "12 min" byline. On the slow side of the usual
-# 200–250 range: these are rewritten full texts, not listicles.
+# 200–250 range: these are full articles, not listicles.
 WPM = 230
 
 MEDIA = ("read", "watch", "listen")

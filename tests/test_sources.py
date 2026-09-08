@@ -225,7 +225,6 @@ async def test_the_store_keeps_the_type_and_its_fields(store):
         kind="hn", extra={"hn_id": "41", "points": 312},
     )
     await store.set_summary(url_hash("https://github.com/x/y"), "s")
-    await store.set_body(url_hash("https://github.com/x/y"), "b")
     (row,) = await store.unpublished("HN")
     assert row.kind == "hn"
     assert row.extra == {"hn_id": "41", "points": 312}
@@ -238,7 +237,6 @@ async def test_a_regather_backfills_the_type_onto_an_older_row(store):
     url = "https://github.com/x/y"
     await store.insert_raw("HN", url, "t", text="body")
     await store.set_summary(url_hash(url), "s")
-    await store.set_body(url_hash(url), "b")
     (row,) = await store.unpublished("HN")
     assert row.kind == "" and row.extra == {}
 
@@ -293,7 +291,6 @@ async def test_gather_files_hn_stories_with_their_type_and_the_edition_shows_it(
             assert await cmd_gather(client, store, config) == 0
         for row in await store.pending_summary():
             await store.set_summary(row.id, "s")
-            await store.set_body(row.id, "b")
         articles = await collect_current_edition(store, config)
         by_title = {a["title"]: a for a in articles}
         linked = by_title["A tool & a story"]
@@ -314,7 +311,6 @@ async def test_a_row_the_store_never_typed_takes_the_kind_from_the_config(tmp_pa
     try:
         await store.insert_raw("Hacker News", "https://github.com/x/y", "t", text="body")
         await store.set_summary(url_hash("https://github.com/x/y"), "s")
-        await store.set_body(url_hash("https://github.com/x/y"), "b")
         (a,) = await collect_current_edition(
             store, [{"name": "Hacker News", "kind": "hn"}]
         )

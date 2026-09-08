@@ -48,8 +48,9 @@ def now_iso() -> str:
 class ArticleRow:
     """One article, in whatever state the pipeline has left it.
 
-    `id` is `url_hash(url)`. `text` is the raw extracted body (NULL when
-    extraction failed), `body` the rewritten one, `summary` the lede.
+    `id` is `url_hash(url)`. `text` is the extracted body as the page or feed
+    gave it (NULL when extraction failed) — it is printed as is, there is no
+    rewrite — and `summary` is the lede.
 
     The three `topic` fields are the edition's own filing, written by the topic
     stage (`tid.topics`) and re-written from scratch every time it runs: a
@@ -69,14 +70,12 @@ class ArticleRow:
     source: str
     title_norm: str = ""
     text: str | None = None
-    body: str | None = None
     summary: str | None = None
     surfaced: str | None = None       # when the source surfaced it
     published: str | None = None      # the article's own publication date
     fetched_at: str = field(default_factory=now_iso)
     extracted_at: str | None = None
     summarized_at: str | None = None
-    rewritten_at: str | None = None
     rendered_at: str | None = None    # ISO date of first edition inclusion
     image: str | None = None          # lead image URL, from the feed or og:image
     topic: str | None = None          # LLM-assigned topic for its edition
@@ -108,7 +107,6 @@ COUNT_KEYS = (
     "total",
     "unreadable",
     "pending_summary",
-    "pending_rewrite",
     "pending_render",
     "rendered",
 )
@@ -152,10 +150,6 @@ class Store(Protocol):
     # --- summarize ------------------------------------------------------
     async def pending_summary(self) -> list[ArticleRow]: ...
     async def set_summary(self, article_id: str, summary: str) -> None: ...
-
-    # --- rewrite --------------------------------------------------------
-    async def pending_rewrite(self) -> list[ArticleRow]: ...
-    async def set_body(self, article_id: str, body: str) -> None: ...
 
     # --- topics ---------------------------------------------------------
     async def set_topic(

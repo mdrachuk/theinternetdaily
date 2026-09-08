@@ -63,7 +63,7 @@ def human_time(iso: str) -> str:
 
 
 def read_url(item: Item, edition_key: str = "") -> str:
-    """Where the full rewritten text of an article lives."""
+    """Where the full text of an article lives."""
     if not item.id:
         return ""
     return f"/e/{edition_key}/a/{item.id}" if edition_key else f"/a/{item.id}"
@@ -96,11 +96,12 @@ def has_math(body: str) -> bool:
 
 
 def article_html(body: str) -> Markup:
-    r"""The rewritten body as HTML: paragraphs, code blocks, inline code.
+    r"""The article text as HTML: paragraphs, code blocks, inline code.
 
-    Deliberately not a Markdown renderer. The rewrite stage emits plain prose
-    with fenced code and TeX in it — that is the whole vocabulary — and running
-    it through a full Markdown parser would start interpreting the prose
+    Deliberately not a Markdown renderer. The extracted text is plain prose,
+    one paragraph per line, with the occasional fenced code block or TeX — that
+    is the whole vocabulary — and running it through a full Markdown parser
+    would start interpreting the prose
     instead (a line beginning "1980. " becoming an ordered list, an underscore
     in a filename becoming emphasis).
 
@@ -201,8 +202,8 @@ def render_edition(
         next=next,
         filters=_filters(edition, medium, base),
         empty_note=empty_note or (
-            "The first ingest has not finished. It gathers, summarizes and "
-            "rewrites every source in sources.toml, which takes a few minutes."
+            "The first ingest has not finished. It gathers and summarizes "
+            "every source in sources.toml, which takes a few minutes."
         ),
     )
 

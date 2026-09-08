@@ -1,6 +1,6 @@
 """End-to-end pipeline test with no network, no GPU and no API key.
 
-gather → extract → summarize → rewrite → topics → edition → LaTeX, with HTTP served by
+gather → extract → summarize → topics → edition → LaTeX, with HTTP served by
 httpx.MockTransport and the LLM replaced by tid.testing.FakeBackend. This
 is the test that would have caught every signature break during the async and
 store migrations, and it is the one CI can always run.
@@ -18,7 +18,6 @@ import pytest
 from tid.cli import (
     cmd_gather,
     cmd_ingest,
-    cmd_rewrite,
     cmd_summarize,
     collect_current_edition,
 )
@@ -115,10 +114,8 @@ async def test_full_pipeline_produces_a_render_ready_edition(pipeline, tmp_path)
     assert counts["pending_summary"] == 2
 
     assert await cmd_summarize(store, backend) == 0
-    assert await cmd_rewrite(store, backend) == 0
     counts = await store.counts()
     assert counts["pending_summary"] == 0
-    assert counts["pending_rewrite"] == 0
 
     articles = await collect_current_edition(store, SOURCES)
     # Newest first, and the unreadable page is absent: it never got a summary.
@@ -126,7 +123,8 @@ async def test_full_pipeline_produces_a_render_ready_edition(pipeline, tmp_path)
         "Second Story", "A Story About & Symbols",
     ]
     assert all(a["summary"] for a in articles)
-    assert all("Rewritten paragraph" in a["text"] for a in articles)
+    # The text is the page's own, as extracted: there is no rewrite.
+    assert all("Paragraph 0 of the article" in a["text"] for a in articles)
     # The feed's HTML entity was decoded at fetch time, not left as &amp;.
     assert any("&" in a["title"] for a in articles)
 
@@ -135,7 +133,6 @@ async def test_edition_renders_to_valid_looking_latex(pipeline):
     client, store, backend = pipeline
     await cmd_gather(client, store, SOURCES)
     await cmd_summarize(store, backend)
-    await cmd_rewrite(store, backend)
     articles = await collect_current_edition(store, SOURCES)
 
     tex = render_tex("2026-08-08", articles, decorations={})
@@ -152,25 +149,21 @@ async def test_rerunning_gather_adds_nothing_and_keeps_the_llm_output(pipeline):
     client, store, backend = pipeline
     await cmd_gather(client, store, SOURCES)
     await cmd_summarize(store, backend)
-    await cmd_rewrite(store, backend)
     calls_after_first = len(backend.calls)
 
     await cmd_gather(client, store, SOURCES)
     assert (await store.counts())["total"] == 3
     await cmd_summarize(store, backend)
-    await cmd_rewrite(store, backend)
     assert len(backend.calls) == calls_after_first
 
 
 async def test_batches_are_sized_by_the_backend(pipeline):
-    """Each stage must chunk to the backend's own limit — FakeBackend allows 4
-    summaries and 2 rewrites per call, so 2 articles is one call each."""
+    """The stage must chunk to the backend's own limit — FakeBackend allows 4
+    summaries per call, so 2 articles is one call."""
     client, store, backend = pipeline
     await cmd_gather(client, store, SOURCES)
     await cmd_summarize(store, backend)
     assert len(backend.calls) == 1
-    await cmd_rewrite(store, backend)
-    assert len(backend.calls) == 2
 
 
 async def test_a_refusing_model_is_retried_twice_then_filed_as_no_summary(
@@ -189,7 +182,6 @@ async def test_a_refusing_model_is_retried_twice_then_filed_as_no_summary(
     assert len(refuser.calls) == 3          # the attempt plus two retries
     assert (await store.counts())["pending_summary"] == 0
     # And the paper carries them, saying so plainly under the headline.
-    await cmd_rewrite(store, FakeBackend())
     articles = await collect_current_edition(store, SOURCES)
     assert [a["summary"] for a in articles] == [NO_SUMMARY, NO_SUMMARY]
     # A re-run has nothing to send: the placeholder is a stored summary.
@@ -239,7 +231,6 @@ async def test_only_the_failed_articles_are_retried(pipeline):
     assert half.calls[1]["user"].count("<article id=") == 1
     # The retried article is renumbered 0 in its own batch, so the fake
     # labels it too: the second article gets a real summary on the retry.
-    await cmd_rewrite(store, FakeBackend())
     articles = await collect_current_edition(store, SOURCES)
     assert [a["summary"] for a in articles] == ["Only the first one."] * 2
     assert NO_SUMMARY not in {a["summary"] for a in articles}
@@ -260,22 +251,8 @@ async def test_a_raising_backend_is_retried_the_same_way(pipeline):
     assert await cmd_summarize(store, broken) == 0
     assert len(broken.calls) == 3
     assert (await store.counts())["pending_summary"] == 0
-    await cmd_rewrite(store, FakeBackend())
     articles = await collect_current_edition(store, SOURCES)
     assert {a["summary"] for a in articles} == {NO_SUMMARY}
-
-
-async def test_the_rewrite_stage_still_leaves_failures_pending(pipeline):
-    """Retries and the placeholder are the summary stage's policy. A rewrite
-    the model refused is not retried and stores nothing: the article keeps
-    its extracted text and stays pending for the next run."""
-    client, store, backend = pipeline
-    await cmd_gather(client, store, SOURCES)
-    await cmd_summarize(store, backend)
-    refuser = FakeBackend(respond=lambda system, user: "I cannot help with that.")
-    assert await cmd_rewrite(store, refuser) == 0
-    assert len(refuser.calls) == 1
-    assert (await store.counts())["pending_rewrite"] == 2
 
 
 async def test_json_backend_takes_the_same_path(pipeline):
@@ -285,16 +262,15 @@ async def test_json_backend_takes_the_same_path(pipeline):
     await cmd_gather(client, store, SOURCES)
     json_backend = FakeBackend(supports_json=True)
     await cmd_summarize(store, json_backend)
-    await cmd_rewrite(store, json_backend)
     articles = await collect_current_edition(store, SOURCES)
     assert len(articles) == 2
-    assert all(a["summary"] and "Rewritten paragraph" in a["text"]
+    assert all(a["summary"] and "Paragraph 0 of the article" in a["text"]
                for a in articles)
     assert json_backend.calls[0]["json_schema"] is not None
 
 
 async def test_ingest_ends_with_the_edition_filed_into_topics(pipeline):
-    """The pipeline is gather → summarize → rewrite → topics, and the last one
+    """The pipeline is gather → summarize → topics, and the last one
     is what decides the paper's sections: by the time ingest returns, every
     article that will be in the next edition carries a topic and knows whether
     it is one of that topic's main stories."""
@@ -320,7 +296,6 @@ async def test_pdf_actually_builds(pipeline, tmp_path):
     client, store, backend = pipeline
     await cmd_gather(client, store, SOURCES)
     await cmd_summarize(store, backend)
-    await cmd_rewrite(store, backend)
     articles = await collect_current_edition(store, SOURCES)
 
     pdf = await build_pdf("2026-08-08", articles, tmp_path / "out")
@@ -404,7 +379,6 @@ async def test_a_feed_is_never_capped_and_every_story_gets_a_page(tmp_path):
         try:
             await cmd_gather(client, store, BULK_SOURCES)
             await cmd_summarize(store, backend)
-            await cmd_rewrite(store, backend)
             articles = await collect_current_edition(store, BULK_SOURCES)
         finally:
             await store.close()
@@ -440,7 +414,6 @@ async def test_the_next_edition_carries_what_the_last_one_did_not(
     async def _sync(client):
         await cmd_gather(client, store, SOURCES)
         await cmd_summarize(store, backend)
-        await cmd_rewrite(store, backend)
         key = await jobs.current_key(store, SOURCES)
         return await jobs.build_edition_for_key(
             key, store, SOURCES, snapshot=True
@@ -460,8 +433,7 @@ async def test_the_next_edition_carries_what_the_last_one_did_not(
             url = "http://articles.invalid/three"
             await store.upsert_rows([ArticleRow(
                 id=url_hash(url), url=url, title="Third Story",
-                source="Test Feed", text="body", summary="lede",
-                body="Rewritten paragraph three.",
+                source="Test Feed", text="Paragraph three.", summary="lede",
                 published="2026-08-05",
                 fetched_at="2099-01-01T00:00:00+00:00",
             )])

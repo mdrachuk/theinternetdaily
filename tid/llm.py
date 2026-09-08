@@ -28,11 +28,8 @@ log = logging.getLogger(__name__)
 class BatchLimits:
     """How much work one call to this backend can carry.
 
-    `rewrite_output_tokens` is the budget for *one* article; the rewrite stage
-    multiplies it by the batch size. Rewriting is close to 1:1, so it has to be
-    at least as large as the input — a reply that runs out of budget mid-string
-    is unparseable, and the article silently stays pending while the next run
-    repeats the same expensive call.
+    `summary_output_tokens` is the budget for *one* article; the summary stage
+    multiplies it by the batch size.
 
     `max_output_tokens` is the hard per-request ceiling, so an oversized ask is
     clamped rather than rejected by the server.
@@ -50,9 +47,6 @@ class BatchLimits:
     summarize_batch: int
     summarize_max_chars: int
     summary_output_tokens: int
-    rewrite_batch: int
-    rewrite_max_chars: int
-    rewrite_output_tokens: int
     max_concurrent: int
     max_output_tokens: int
     topic_max_articles: int = 200
@@ -90,9 +84,9 @@ class LLMBackend(Protocol):
         max_tokens: int,
         json_schema: dict[str, Any] | None = None,
     ) -> str:
-        """Single-shot completion. Always streams under the hood — large
-        rewrite batches can exceed a non-streaming deadline, and a slow local
-        model benefits from bytes-flowing keepalive through any proxy.
+        """Single-shot completion. Always streams under the hood — a large
+        batch can exceed a non-streaming deadline, and a slow local model
+        benefits from bytes-flowing keepalive through any proxy.
 
         `json_schema` asks for structured output. A backend that reports
         `supports_json = False` may ignore it; callers must cope either way.
@@ -108,12 +102,9 @@ ANTHROPIC_LIMITS = BatchLimits(
     summarize_batch=8,
     summarize_max_chars=4000,
     summary_output_tokens=300,
-    rewrite_batch=8,
-    rewrite_max_chars=16000,
-    rewrite_output_tokens=4096,
     max_concurrent=6,
-    # 8 x 4096: Haiku's own output limit is far higher, so the ceiling only
-    # exists to keep a mistake from turning into a 64k request.
+    # Haiku's own output limit is far higher, so the ceiling only exists to
+    # keep a mistake from turning into a 64k request.
     max_output_tokens=32768,
     # ~200 headlines with a 240-char summary each is ~25k tokens — comfortable
     # for a 200k window, and more articles than an edition has ever carried.
@@ -178,14 +169,9 @@ class AnthropicBackend:
 
 # --- vLLM (OpenAI-compatible) --------------------------------------------
 
-# Sized for a 12B model on a 20 GB card with --max-model-len 16384. Rewrite
-# batches of 1 keep one bad reply from taking several articles down with it.
-#
-# max_output_tokens is the number that bit us: rewriting is close to 1:1, so
-# 12 000 input chars (~3 000 tokens) needs at least that many tokens back, and
-# JSON escaping adds more. At 4096 the longest articles were truncated
-# mid-string and the whole reply became unparseable. 8192 leaves the request
-# well inside a 16k window (~700 system + ~3 000 article + 8 192 output).
+# Sized for a 12B model on a 20 GB card with --max-model-len 16384: the
+# summary batch stays small so one bad reply takes few articles down with it,
+# and the output ceiling leaves the request well inside the window.
 VLLM_LIMITS = BatchLimits(
     summarize_batch=4,
     summarize_max_chars=3000,
@@ -193,9 +179,6 @@ VLLM_LIMITS = BatchLimits(
     # starts rambling. One that runs past even this truncates the reply, which
     # is why parse_json_batch salvages the items that did close.
     summary_output_tokens=512,
-    rewrite_batch=1,
-    rewrite_max_chars=12000,
-    rewrite_output_tokens=8192,
     max_concurrent=4,
     max_output_tokens=8192,
     # The topic call is the only prompt that scales with the size of the whole
@@ -335,9 +318,6 @@ OLLAMA_LIMITS = BatchLimits(
     summarize_batch=2,
     summarize_max_chars=2500,
     summary_output_tokens=512,
-    rewrite_batch=1,
-    rewrite_max_chars=8000,
-    rewrite_output_tokens=6144,
     max_concurrent=1,
     max_output_tokens=6144,
     topic_max_articles=40,

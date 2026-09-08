@@ -57,13 +57,13 @@ def test_make_backend_rejects_an_unknown_name():
 
 
 def test_local_backends_ask_for_much_smaller_batches_than_anthropic():
-    """The concrete bug this guards: 8 articles x 16 000 chars asking for
-    4096*8 output tokens is ~60k tokens, far past a 16k max-model-len."""
-    assert VLLM_LIMITS.rewrite_batch < ANTHROPIC_LIMITS.rewrite_batch
-    assert VLLM_LIMITS.rewrite_max_chars < ANTHROPIC_LIMITS.rewrite_max_chars
+    """The concrete bug this guards: a batch sized for a hosted API is far
+    past a 16k max-model-len on a local model."""
+    assert VLLM_LIMITS.summarize_batch < ANTHROPIC_LIMITS.summarize_batch
+    assert VLLM_LIMITS.summarize_max_chars < ANTHROPIC_LIMITS.summarize_max_chars
     est_tokens = (
-        VLLM_LIMITS.rewrite_batch
-        * (VLLM_LIMITS.rewrite_max_chars / 4 + VLLM_LIMITS.max_output_tokens)
+        VLLM_LIMITS.summarize_batch
+        * (VLLM_LIMITS.summarize_max_chars / 4 + VLLM_LIMITS.summary_output_tokens)
     )
     assert est_tokens < 16384
 
@@ -150,7 +150,7 @@ def test_vllm_concurrency_can_be_matched_to_max_num_seqs(monkeypatch):
     monkeypatch.setenv("VLLM_MAX_CONCURRENCY", "2")
     assert VLLMBackend().limits.max_concurrent == 2
     # Everything else keeps its default.
-    assert VLLMBackend().limits.rewrite_batch == VLLM_LIMITS.rewrite_batch
+    assert VLLMBackend().limits.summarize_batch == VLLM_LIMITS.summarize_batch
 
 
 # --- Ollama ---------------------------------------------------------------
@@ -172,31 +172,28 @@ async def test_ollama_streams_ndjson_and_records_usage():
 
 # --- output budgets -------------------------------------------------------
 
-async def test_rewrite_asks_for_a_per_article_budget_from_the_backend():
-    """The concrete failure this pins: a flat 4096-token ask truncated the
-    longest articles mid-reply, and a truncated batch protocol parses to
-    nothing — so the article silently stayed pending forever."""
-    from tid.rewrite import rewrite_batch
+async def test_summarize_asks_for_a_per_article_budget_from_the_backend():
+    """The batch's output budget is the backend's per-article budget times
+    the batch, never a flat number: a flat ask truncated the longest replies
+    mid-batch, and a truncated batch protocol parses to nothing."""
+    from tid.summarize import summarize_batch
 
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.update(json.loads(request.content))
         return httpx.Response(200, content=_sse(
-            {"choices": [{"delta": {"content": '{"articles":[]}'}}]}
+            {"choices": [{"delta": {"content": '{"summaries":[]}'}}]}
         ))
 
     backend = VLLMBackend(client=_vllm_client(handler))
-    await rewrite_batch(backend, [("t", "body")])
-    assert seen["max_tokens"] == VLLM_LIMITS.rewrite_output_tokens
+    await summarize_batch(backend, [("t", "body")])
+    assert seen["max_tokens"] == VLLM_LIMITS.summary_output_tokens
 
 
-def test_every_backend_can_return_at_least_as_much_as_it_is_fed():
-    """Rewriting is ~1:1, so the per-article output budget must cover the
-    per-article input. Roughly 4 chars per token."""
+def test_every_backend_stays_under_its_own_ceiling():
     for limits in (ANTHROPIC_LIMITS, VLLM_LIMITS, OLLAMA_LIMITS):
-        assert limits.rewrite_output_tokens >= limits.rewrite_max_chars / 4
-        assert limits.max_output_tokens >= limits.rewrite_output_tokens
+        assert limits.max_output_tokens >= limits.summary_output_tokens
 
 
 async def test_a_truncated_reply_is_reported_not_swallowed(caplog):

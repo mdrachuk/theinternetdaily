@@ -2,7 +2,7 @@
 
 The paper *is* the website. Every article the pipeline gathered, summarized and
 rewrote is laid out as a front page with its continuation below the fold, and
-each one has a page of its own carrying the full rewritten text — no clicking
+each one has a page of its own carrying the full text — no clicking
 through to the source unless you want to.
 
 Routes:
@@ -16,13 +16,17 @@ Routes:
   GET  /icon/{domain}.png   a cached source mark
   GET  /healthz             liveness probe
   GET  /readyz              readiness probe (store + config)
-  POST /ingest              manual kick, via the job queue (gather →
-                            summarize → rewrite → topics)
+  POST /ingest              manual kick, via the job queue: gather →
+                            summarize → topics → a new edition
+  POST /prepare             the hourly job, on demand: gather → summarize,
+                            into the store only
 
 Both edition routes take `?m=read|watch|listen` to show one medium only.
 
 Background:
-  APScheduler (AsyncIOScheduler) enqueues `ingest` on a schedule.
+  APScheduler (AsyncIOScheduler) enqueues `prepare` every hour and `ingest`
+  on the edition schedule. The site only ever serves the newest snapshot, so
+  what `prepare` writes stays out of sight until `ingest` assembles a paper.
 
 PDFs are not built. `tid render` still typesets one from the same store if you
 want a copy for an e-ink reader, but nothing on this service does it, and no
@@ -40,10 +44,13 @@ Environment:
   TID_CACHE   cache dir (edition snapshots + cached source marks)
   TID_WORKERS concurrent LLM batches
 
-  Scheduling — pick one:
+  Scheduling the edition — pick one:
     INGEST_INTERVAL_SECONDS  every N seconds (default: 14400 = 4h)
     INGEST_SCHEDULE          "HH:MM,HH:MM,…" cron-style fixed times
     INGEST_TIMEZONE          IANA tz, used with INGEST_SCHEDULE (default: UTC)
+
+  Scheduling the store fill between editions:
+    PREPARE_INTERVAL_SECONDS every N seconds (default: 3600 = 1h; 0 disables)
 
   Post-ingest delivery hook:
     POST_INGEST_HOOK          executable on disk; receives the snapshot path as $1
@@ -74,16 +81,25 @@ from .store import open_store
 
 # --- Scheduler ------------------------------------------------------------
 
-def start_scheduler(job) -> AsyncIOScheduler:
-    """Start the background ingest scheduler on the running event loop.
+def start_scheduler(job, prepare=None) -> AsyncIOScheduler:
+    """Start the background scheduler on the running event loop.
 
-    Two modes (in priority order):
+    `job` makes an edition. Two modes (in priority order):
       INGEST_SCHEDULE=07:00,18:00   → cron-style at the listed HH:MM times
       INGEST_INTERVAL_SECONDS=14400 → every N seconds (default 4h)
 
     The cron mode also honours INGEST_TIMEZONE (an IANA tz, default UTC).
+
+    `prepare`, when given, fills the store between editions — gather and
+    summarize — every PREPARE_INTERVAL_SECONDS (default one hour,
+    0 to turn it off). It is what keeps the edition run short: by the time
+    the paper is due, nearly everything in it is already written.
     """
     sched = AsyncIOScheduler()
+    if prepare is not None:
+        every = int(os.environ.get("PREPARE_INTERVAL_SECONDS", str(3600)))
+        if every > 0:
+            sched.add_job(prepare, "interval", seconds=every, id="prepare")
     schedule = os.environ.get("INGEST_SCHEDULE", "").strip()
     if schedule:
         tz = os.environ.get("INGEST_TIMEZONE", "UTC")
@@ -121,7 +137,10 @@ async def _lifespan(app: FastAPI):
         async def _enqueue_ingest() -> None:
             await app.state.queue.enqueue("ingest", job_id="ingest")
 
-        app.state.scheduler = start_scheduler(_enqueue_ingest)
+        async def _enqueue_prepare() -> None:
+            await app.state.queue.enqueue("prepare", job_id="prepare")
+
+        app.state.scheduler = start_scheduler(_enqueue_ingest, _enqueue_prepare)
     try:
         yield
     finally:
@@ -206,7 +225,7 @@ def create_app(queue=None) -> FastAPI:
             counts, fetched_at = await store.counts(), await store.max_fetched_at()
         except Exception:
             counts, fetched_at = dict.fromkeys(
-                ("total", "rendered", "pending_summary", "pending_rewrite"), 0
+                ("total", "rendered", "pending_summary"), 0
             ), ""
         finally:
             await store.close()
@@ -270,10 +289,20 @@ def create_app(queue=None) -> FastAPI:
     async def trigger_ingest():
         # Optional manual kick, for cron-style external triggers. It goes
         # through the queue, so a Redis-backed deployment runs it on a worker
-        # instead of in the web process — same call either way.
+        # instead of in the web process — same call either way. An hourly
+        # prepare that happens to be running does not refuse it: the queue
+        # holds the edition until the pipeline is free.
         if jobs.ingest_running():
             return JSONResponse({"status": "already running"}, status_code=202)
         await app.state.queue.enqueue("ingest", job_id="ingest")
+        return JSONResponse({"status": "started"}, status_code=202)
+
+    @app.post("/prepare")
+    async def trigger_prepare():
+        # The hourly job, on demand: fill the store without making a paper.
+        if jobs.running() == "prepare":
+            return JSONResponse({"status": "already running"}, status_code=202)
+        await app.state.queue.enqueue("prepare", job_id="prepare")
         return JSONResponse({"status": "started"}, status_code=202)
 
     @app.get("/ingest")
@@ -317,10 +346,6 @@ def _page(edition: ed.Edition, medium: str | None) -> HTMLResponse:
             prev = _step(rows[i + 1], medium)
         if i > 0:
             next_ = _step(rows[i - 1], medium)
-    elif rows:
-        # The current edition is assembled but not yet snapshotted (it is
-        # empty). The archive's newest is still the way back.
-        prev = _step(rows[0], medium)
     return HTMLResponse(site.render_edition(
         ed.filtered(edition, medium),
         prev=prev, next=next_, medium=medium, base=_base(edition, keys),
@@ -328,8 +353,9 @@ def _page(edition: ed.Edition, medium: str | None) -> HTMLResponse:
 
 
 def _base(edition: ed.Edition, keys: list[str]) -> str:
-    """This edition's own URL. An edition with nothing in it was never
-    snapshotted, so `/e/{key}` would 404 — only `/` can show it."""
+    """This edition's own URL. The empty paper of a store nothing has been
+    published from yet has no snapshot, so `/e/{key}` would 404 — only `/`
+    can show it."""
     return f"/e/{edition.key}" if edition.key in keys else "/"
 
 
@@ -379,31 +405,16 @@ def _source_rows(in_edition: dict[str, int] | None = None) -> list[dict]:
 
 
 async def _current_edition() -> ed.Edition:
-    """The edition for right now, assembling and snapshotting it if needed."""
-    sources = config.load_sources()
-    store = open_store(config.store_url())
-    try:
-        key = await jobs.current_key(store, sources)
-        return await jobs.build_edition_for_key(key, store, sources)
-    finally:
-        await store.close()
+    """The paper for right now: the newest snapshot, never the live store."""
+    return jobs.current_edition(config.load_sources())
 
 
 async def _current_key_or_none() -> str | None:
-    """The key the current edition *would* have, without assembling anything.
-
-    archive.json must answer even when the store is unreachable — a missing
-    `current` is a better response than a 500 — so failures collapse to None.
-    """
-    try:
-        sources = config.load_sources()
-        store = open_store(config.store_url())
-        try:
-            return await jobs.current_key(store, sources)
-        finally:
-            await store.close()
-    except Exception:
-        return None
+    """The key of the edition `/` shows, or None when nothing has been
+    published yet. A snapshot listing, so it answers even when the store is
+    unreachable."""
+    newest = archive.latest(config.cache_dir())
+    return newest.key if newest is not None else None
 
 
 # ASGI entry point: `uvicorn tid.web:app`

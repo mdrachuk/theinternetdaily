@@ -189,9 +189,9 @@ async def _run_llm_stage(
     retries: int = 0,
     fallback: str | None = None,
 ) -> int:
-    """Shared driver for the summarize and rewrite stages: chunk the pending
-    rows, run `batch_fn` over each chunk with at most `workers` in flight, and
-    store each batch's results as soon as it lands.
+    """Driver for a per-article LLM stage: chunk the pending rows, run
+    `batch_fn` over each chunk with at most `workers` in flight, and store
+    each batch's results as soon as it lands.
 
     Storing per batch rather than after the whole stage matters on a local
     model, where one stage runs for tens of minutes: a crash at article 43
@@ -301,26 +301,6 @@ async def cmd_summarize(
     )
 
 
-async def cmd_rewrite(
-    store: Store, backend: LLMBackend, workers: int | None = None
-) -> int:
-    from .rewrite import rewrite_batch
-
-    pending = await store.pending_rewrite()
-    if not pending:
-        _log("[rewrite] nothing pending")
-        return 0
-
-    async def _batch(items):
-        return await rewrite_batch(backend, items)
-
-    return await _run_llm_stage(
-        "rewrite", pending, _batch, store.set_body,
-        _resolve_workers(backend, workers),
-        backend.limits.rewrite_batch,
-    )
-
-
 async def cmd_topics(
     store: Store,
     backend: LLMBackend,
@@ -341,7 +321,7 @@ async def cmd_topics(
     Runs over the whole unpublished set every time, not over "articles missing
     a topic". A topic set describes one edition: an article that was filed
     yesterday and still has not been published belongs in *this* paper's
-    sections, under this paper's names. So every row is rewritten, including
+    sections, under this paper's names. So every row is re-filed, including
     back to unfiled when the model cannot place it.
 
     Failure at any pass costs the layout, never the edition: unfiled articles
@@ -488,8 +468,8 @@ async def collect_current_edition(
 
     An article runs in the first edition published after it becomes ready —
     which is not the same as the first one after it was gathered, because
-    summarizing and rewriting a whole feed takes longer than one edition's
-    worth of patience. `floor` is only for the case where nothing has ever been
+    summarizing a whole feed can take longer than one edition's worth of
+    patience. `floor` is only for the case where nothing has ever been
     published; `jobs.build_edition_for_key` gets it from `archive.floor`.
     """
     out: list[dict] = []
@@ -519,7 +499,9 @@ async def collect_current_edition(
                 "extra": r.extra,
                 "url": r.url,
                 "title": r.title,
-                "text": r.body or r.text,
+                # Printed as extracted: the page's own paragraphs, in the
+                # page's own language. There is no rewrite stage.
+                "text": r.text,
                 "summary": r.summary,
                 "image": r.image,
                 "date": _format_date(r.published or r.surfaced),
@@ -554,6 +536,27 @@ async def cmd_render(
     return 0
 
 
+async def cmd_prepare(
+    client: httpx.AsyncClient,
+    store: Store,
+    backend: LLMBackend,
+    sources: list[dict],
+    workers: int | None = None,
+) -> int:
+    """gather + summarize: everything that is about one article.
+
+    These two stages only ever add to the store — a new row, its summary —
+    and nothing a reader sees moves until an edition is assembled. That is
+    what makes them safe to run every hour: by the time the edition is due,
+    the day's articles are already in and summarized, and the expensive part
+    of the run is a handful of stragglers.
+    """
+    rc = await cmd_gather(client, store, sources)
+    if rc:
+        return rc
+    return await cmd_summarize(store, backend, workers)
+
+
 async def cmd_ingest(
     client: httpx.AsyncClient,
     store: Store,
@@ -562,19 +565,14 @@ async def cmd_ingest(
     workers: int | None = None,
     standing: Sequence[Topic] = (),
 ) -> int:
-    """gather + summarize + rewrite + topics. No PDF — that's the renderer's job.
+    """prepare + topics. No PDF — that's the renderer's job.
 
     Topics run last because they read the finished set: only an article that
-    has a summary and a rewritten body will be in the next edition, and the
-    topic set is a judgement about that edition rather than about each article.
+    has a summary will be in the next edition, and the topic set is a
+    judgement about that edition rather than about each article. It is the one
+    stage that is *not* run hourly, for the same reason.
     """
-    rc = await cmd_gather(client, store, sources)
-    if rc:
-        return rc
-    rc = await cmd_summarize(store, backend, workers)
-    if rc:
-        return rc
-    rc = await cmd_rewrite(store, backend, workers)
+    rc = await cmd_prepare(client, store, backend, sources, workers)
     if rc:
         return rc
     return await cmd_topics(store, backend, workers, standing)
@@ -585,7 +583,6 @@ async def cmd_status(store: Store) -> int:
     print(f"total articles         : {c['total']}")
     print(f"  unreadable           : {c['unreadable']}")
     print(f"  awaiting summary     : {c['pending_summary']}")
-    print(f"  awaiting rewrite     : {c['pending_rewrite']}")
     print(f"  awaiting render      : {c['pending_render']}")
     print(f"  already rendered     : {c['rendered']}")
     return 0
@@ -645,16 +642,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp_sum = sub.add_parser("summarize", help="summarize articles still missing a summary")
     sp_sum.add_argument("--workers", type=int, default=None)
 
-    sp_rw = sub.add_parser("rewrite", help="reformat article bodies into clean paragraphs")
-    sp_rw.add_argument("--workers", type=int, default=None)
-
     sp_top = sub.add_parser(
         "topics",
         help="name the edition's topics and file every article into them")
     sp_top.add_argument("--workers", type=int, default=None)
 
+    sp_prep = sub.add_parser(
+        "prepare", help="gather + summarize (what runs hourly)")
+    sp_prep.add_argument("--workers", type=int, default=None)
+
     sp_ing = sub.add_parser(
-        "ingest", help="gather + summarize + rewrite + topics (no PDF)")
+        "ingest", help="gather + summarize + topics (no PDF)")
     sp_ing.add_argument("--workers", type=int, default=None)
 
     sp_ren = sub.add_parser("render", help="render the current edition PDF")
@@ -693,7 +691,7 @@ async def _main(argv: list[str] | None = None) -> int:
 
     # Always load config (cheap; renderer needs source order).
     sources = _load_sources(args.config)
-    if cmd in ("gather", "ingest", "build") and not sources:
+    if cmd in ("gather", "prepare", "ingest", "build") and not sources:
         _log("[fatal] no sources configured")
         return 2
     try:
@@ -718,10 +716,12 @@ async def _main(argv: list[str] | None = None) -> int:
                 return await cmd_gather(client, store, sources)
             if cmd == "summarize":
                 return await cmd_summarize(store, backend, workers)
-            if cmd == "rewrite":
-                return await cmd_rewrite(store, backend, workers)
             if cmd == "topics":
                 return await cmd_topics(store, backend, workers, standing)
+            if cmd == "prepare":
+                return await cmd_prepare(
+                    client, store, backend, sources, workers
+                )
             if cmd == "ingest":
                 return await cmd_ingest(
                     client, store, backend, sources, workers, standing
