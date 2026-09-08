@@ -61,7 +61,7 @@ $EDITOR tid/templates/style.css
 docker compose up --build -d
 
 # Open http://localhost:8000
-# The first edition assembles on demand. Background ingest runs every 4h.
+# The store fills every hour; an edition is assembled from it every 4h.
 ```
 
 Everything you'd normally want to change is in **two files**:
@@ -138,10 +138,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Then visit `http://localhost:8000` — that is the paper. The first edition
-assembles on demand (a store read and a JSON write, so it is instant); the
-articles in it appear as ingest works through them, which takes a few minutes
-on a cold store.
+Then visit `http://localhost:8000` — that is the paper. It is empty until the
+first edition is assembled, which the scheduler does on its own; to have one
+now, `curl -X POST http://localhost:8000/ingest` and give it a few minutes on
+a cold store.
 
 State lives in `./data/state.db` (bind-mounted from the host) so it survives
 container restarts.
@@ -380,19 +380,24 @@ pure and runs per request:
    every source, writes them to a snapshot keyed by a hash of "what's in the
    store" + "what's in sources.toml", and stamps `rendered_at` on each one so
    the next edition knows to skip it. This is cheap: a store read and a JSON
-   write, no LLM and no typesetting, which is why it happens inline on a cache
-   miss rather than through the queue.
+   write, no LLM and no typesetting. It is also the only moment an article
+   becomes visible: the site serves the newest snapshot, never the live store.
 6. **lay out** — `tid/edition.py` turns that flat list into a front page:
    which story leads, which two go beside it, what each column holds, what
    continues below. It is pure and it runs per request, so the layout is
    *not* stored — an improvement to the front page reaches editions published
    last month too.
 
-A background `APScheduler` job (`AsyncIOScheduler`, on the app's event loop)
-runs steps 1–4 every 4 hours (configurable). Each ingest ends by assembling
-the edition and caching its source marks, so the archive entry exists — and
-the paper loads without a single outbound request — whether or not anyone
-visits.
+Two background `APScheduler` jobs (`AsyncIOScheduler`, on the app's event
+loop) drive this. **`prepare`** runs steps 1–3 every hour: it fills the store
+with gathered, summarized and rewritten articles and changes nothing a reader
+can see. **`ingest`** runs on the edition schedule (every 4 hours by default,
+or at fixed times): steps 1–3 again — by now a handful of stragglers — then
+topics over the whole unpublished set, then the edition, its source marks and
+the delivery hook. Splitting the work this way keeps the edition run short
+and, on a local GPU, spreads a day's model time across the day; the archive
+entry exists — and the paper loads without a single outbound request — whether
+or not anyone visits.
 
 ## HTTP endpoints
 
@@ -408,7 +413,8 @@ visits.
 | `GET /icon/{domain}.png`  | a source mark, fetched once and cached on disk     |
 | `GET /healthz`            | liveness probe (returns `ok`)                      |
 | `GET /readyz`             | readiness probe — pings the store, parses config   |
-| `POST /ingest`            | manual kick of gather → summarize → rewrite → topics |
+| `POST /ingest`            | manual kick: gather → summarize → rewrite → topics → a new edition |
+| `POST /prepare`           | the hourly job, on demand: fill the store, publish nothing |
 
 Both edition routes take `?m=read`, `?m=watch` or `?m=listen` to show one
 medium only; the whole edition is laid out again from what is left, so a
@@ -682,9 +688,21 @@ same edition. On a local 12B model the topic-naming prompt is the one that
 scales with the size of the edition, so `BatchLimits.topic_max_articles` caps
 it at the 60 newest headlines (`VLLM_LIMITS`) to stay inside a 16k window.
 
-## Scheduling ingests
+## Scheduling
 
-Two modes; pick whichever fits your routine. Set the env var in `.env`.
+Two jobs. The **edition** (`ingest`) runs on the schedule below; the **store
+fill** (`prepare`) runs every hour in between, gathering, summarizing and
+rewriting whatever the sources have published since the last look. Nothing
+`prepare` writes reaches the site — the front page is the newest edition, not
+the store — so the hourly runs only mean that when the edition is due, its
+articles are already written and the run takes minutes rather than an hour.
+
+```bash
+# .env
+PREPARE_INTERVAL_SECONDS=3600   # the default; 0 turns the hourly fill off
+```
+
+For the edition, two modes; pick whichever fits your routine.
 
 ### Every N hours (default)
 
@@ -705,10 +723,11 @@ If both are set, `INGEST_SCHEDULE` wins. Either way the run ends with the
 edition assembled and its source marks cached, so the paper loads instantly
 between scheduled runs.
 
-You can also kick a manual ingest any time:
+You can also kick either job by hand:
 
 ```bash
-curl -X POST http://localhost:8000/ingest
+curl -X POST http://localhost:8000/ingest    # a new edition, now
+curl -X POST http://localhost:8000/prepare   # fill the store, publish nothing
 ```
 
 ## Delivery — do something with each new edition
@@ -835,7 +854,9 @@ uv run tid summarize    # LLM pass 1 (batched)
 uv run tid rewrite      # LLM pass 2 (batched)
 uv run tid topics       # LLM pass 3: name the edition's sections and file it
 uv run tid render       # xelatex → PDF
-# or all of the above in sequence:
+# or in sequence: the first three (what the hourly job runs) …
+uv run tid prepare
+# … or all of the above:
 uv run tid build
 ```
 

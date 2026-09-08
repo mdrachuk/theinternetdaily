@@ -28,11 +28,15 @@ services:
       # only need setting to point at a second store — a benchmark run, say.
       - TID_STATE=${TID_STATE:-/data/state.db}
       - TID_CACHE=${TID_CACHE:-/data/archive/cache}
-      # Scheduling: INGEST_SCHEDULE (fixed HH:MM times, in INGEST_TIMEZONE)
-      # wins over INGEST_INTERVAL_SECONDS when both are set.
+      # Scheduling the edition: INGEST_SCHEDULE (fixed HH:MM times, in
+      # INGEST_TIMEZONE) wins over INGEST_INTERVAL_SECONDS when both are set.
       - INGEST_INTERVAL_SECONDS=${INGEST_INTERVAL_SECONDS:-14400}
       - INGEST_SCHEDULE=${INGEST_SCHEDULE:-}
       - INGEST_TIMEZONE=${INGEST_TIMEZONE:-UTC}
+      # Between editions the store is filled every hour (gather, summarize,
+      # rewrite) so the edition run itself has little left to do. Nothing
+      # reaches the site until the edition is assembled. 0 turns it off.
+      - PREPARE_INTERVAL_SECONDS=${PREPARE_INTERVAL_SECONDS:-3600}
       - TID_WORKERS=${TID_WORKERS:-8}
       # Hook run after each ingest; receives the new edition snapshot path
       - POST_INGEST_HOOK=${POST_INGEST_HOOK:-}

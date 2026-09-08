@@ -554,6 +554,30 @@ async def cmd_render(
     return 0
 
 
+async def cmd_prepare(
+    client: httpx.AsyncClient,
+    store: Store,
+    backend: LLMBackend,
+    sources: list[dict],
+    workers: int | None = None,
+) -> int:
+    """gather + summarize + rewrite: everything that is about one article.
+
+    These three stages only ever add to the store — a new row, its summary,
+    its rewritten body — and nothing a reader sees moves until an edition is
+    assembled. That is what makes them safe to run every hour: by the time
+    the edition is due, the day's articles are already written and the
+    expensive part of the run is a handful of stragglers.
+    """
+    rc = await cmd_gather(client, store, sources)
+    if rc:
+        return rc
+    rc = await cmd_summarize(store, backend, workers)
+    if rc:
+        return rc
+    return await cmd_rewrite(store, backend, workers)
+
+
 async def cmd_ingest(
     client: httpx.AsyncClient,
     store: Store,
@@ -562,19 +586,14 @@ async def cmd_ingest(
     workers: int | None = None,
     standing: Sequence[Topic] = (),
 ) -> int:
-    """gather + summarize + rewrite + topics. No PDF — that's the renderer's job.
+    """prepare + topics. No PDF — that's the renderer's job.
 
     Topics run last because they read the finished set: only an article that
     has a summary and a rewritten body will be in the next edition, and the
     topic set is a judgement about that edition rather than about each article.
+    It is the one stage that is *not* run hourly, for the same reason.
     """
-    rc = await cmd_gather(client, store, sources)
-    if rc:
-        return rc
-    rc = await cmd_summarize(store, backend, workers)
-    if rc:
-        return rc
-    rc = await cmd_rewrite(store, backend, workers)
+    rc = await cmd_prepare(client, store, backend, sources, workers)
     if rc:
         return rc
     return await cmd_topics(store, backend, workers, standing)
@@ -653,6 +672,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="name the edition's topics and file every article into them")
     sp_top.add_argument("--workers", type=int, default=None)
 
+    sp_prep = sub.add_parser(
+        "prepare", help="gather + summarize + rewrite (what runs hourly)")
+    sp_prep.add_argument("--workers", type=int, default=None)
+
     sp_ing = sub.add_parser(
         "ingest", help="gather + summarize + rewrite + topics (no PDF)")
     sp_ing.add_argument("--workers", type=int, default=None)
@@ -693,7 +716,7 @@ async def _main(argv: list[str] | None = None) -> int:
 
     # Always load config (cheap; renderer needs source order).
     sources = _load_sources(args.config)
-    if cmd in ("gather", "ingest", "build") and not sources:
+    if cmd in ("gather", "prepare", "ingest", "build") and not sources:
         _log("[fatal] no sources configured")
         return 2
     try:
@@ -722,6 +745,10 @@ async def _main(argv: list[str] | None = None) -> int:
                 return await cmd_rewrite(store, backend, workers)
             if cmd == "topics":
                 return await cmd_topics(store, backend, workers, standing)
+            if cmd == "prepare":
+                return await cmd_prepare(
+                    client, store, backend, sources, workers
+                )
             if cmd == "ingest":
                 return await cmd_ingest(
                     client, store, backend, sources, workers, standing

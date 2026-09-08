@@ -331,3 +331,44 @@ async def test_icon_route_serves_a_cached_mark(client, cache):
     r = await client.get("/icon/lwn.net.png")
     assert r.status_code == 200
     assert r.headers["content-type"] == "image/png"
+
+
+# --- the site shows editions, not the store --------------------------------
+
+async def test_index_is_the_newest_snapshot_not_the_store(
+    client, cache, tmp_path, monkeypatch
+):
+    """Between editions the hourly prepare job keeps writing ready articles
+    into the store. None of them may reach the front page until an edition
+    is assembled — and loading the page must not assemble one."""
+    from datetime import datetime, timezone
+
+    from tid.store import ArticleRow, SqliteStore, url_hash
+
+    db = tmp_path / "state.db"
+    monkeypatch.setenv("TID_STATE", str(db))
+    monkeypatch.delenv("TID_STORE", raising=False)
+    store = SqliteStore(db)
+    url = "http://x.invalid/fresh"
+    try:
+        await store.upsert_rows([ArticleRow(
+            id=url_hash(url), url=url, title="Fresh From The Hourly Gather",
+            source="Quanta", text="body", summary="lede", body="rewritten",
+            fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )])
+
+        # Nothing published yet: an empty paper, and still nothing published.
+        r = await client.get("/")
+        assert r.status_code == 200
+        assert "Nothing filed yet" in r.text
+        assert archive.readable(cache) == []
+        assert len(await store.unpublished("Quanta")) == 1
+
+        # An edition exists: the page is that edition, and only that edition.
+        _edition(cache, "b" * 24, "2026-08-12")
+        r = await client.get("/")
+        assert "Headline 0" in r.text
+        assert "Fresh From The Hourly Gather" not in r.text
+        assert (await client.get("/archive.json")).json()["current"] == "b" * 24
+    finally:
+        await store.close()

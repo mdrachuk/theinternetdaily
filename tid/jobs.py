@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import archive, config, edition as ed, icons
 from .cache import edition_key, ensure_dir
-from .cli import cmd_ingest, collect_current_edition
+from .cli import cmd_ingest, cmd_prepare, collect_current_edition
 from .http import client_context
 from .llm import make_backend
 from .store import Store, open_store
@@ -48,7 +48,7 @@ async def current_key(store: Store, sources: list[dict]) -> str:
 
 async def build_edition_for_key(
     key: str, store: Store, sources: list[dict],
-    *, snapshot: bool | None = None,
+    *, snapshot: bool = True,
 ) -> ed.Edition:
     """Assemble the edition for `key`, snapshotting it on first request.
 
@@ -59,21 +59,19 @@ async def build_edition_for_key(
     repeats itself, which is a great deal better than marking articles that
     never made it into a paper.
 
-    `snapshot` defaults to "not while an ingest is running". A paper assembled
-    halfway through one would carry whatever had finished rewriting at that
-    moment and mark the rest published-but-absent; the ingest builds its own
-    edition when it is done, and passes True.
+    Only the `ingest` job calls this with `snapshot=True`, once its pipeline
+    has drained. The site never assembles a paper of its own: it serves the
+    newest snapshot (`current_edition`), so the hourly `prepare` job can fill
+    the store all day without a single article reaching the front page early.
+    `snapshot=False` is a dry run — the same paper, written nowhere and marking
+    nothing.
 
-    Cheap — a store read and a JSON write, no LLM and no typesetting — so the
-    web process doing this inline on a cache miss costs a reader a moment, not
-    a minute. That is the whole reason the PDF build used to need a queue.
+    Cheap — a store read and a JSON write, no LLM and no typesetting.
     """
     cache = config.cache_dir()
     existing = archive.load(cache, key)
     if existing is not None:
         return ed.refiled(existing, sources)
-    if snapshot is None:
-        snapshot = not ingest_running()
     async with _lock_for(key):
         existing = archive.load(cache, key)
         if existing is not None:
@@ -107,6 +105,26 @@ async def build_edition_for_key(
         built = archive.record(cache, key, today, articles)
         await store.mark_rendered([a["id"] for a in articles], today)
         return built
+
+
+def current_edition(sources: list[dict]) -> ed.Edition:
+    """The paper the site shows: the newest snapshot, re-filed against the
+    sources config as it reads now.
+
+    Deliberately not "whatever the store would produce right now". Between
+    editions the store keeps filling — that is the hourly `prepare` job's
+    whole purpose — and the front page must not follow it; an article becomes
+    news when an edition is assembled, not when a gather happens to land.
+    A fresh install with no snapshot yet shows an empty paper until the first
+    `ingest` runs.
+    """
+    cache = config.cache_dir()
+    newest = archive.latest(cache)
+    if newest is not None:
+        loaded = archive.load(cache, newest.key)
+        if loaded is not None:
+            return ed.refiled(loaded, sources)
+    return ed.build([], key="", date=date.today().isoformat(), built_at="")
 
 
 async def warm_icons(edition: ed.Edition) -> int:
@@ -154,70 +172,105 @@ async def run_hook(hook: str, snapshot: Path) -> None:
 
 # --- jobs -----------------------------------------------------------------
 
-# One ingest at a time within a process. Across processes that is the queue's
-# job (an arq worker with max_jobs=1), which is why this is not the only guard.
-_ingest_lock = asyncio.Lock()
+# One pipeline at a time within a process: both jobs run LLM stages over the
+# same pending rows, and two of them at once would summarize the same batch
+# twice. Across processes that is the queue's job (an arq worker with
+# max_jobs=1), which is why this is not the only guard.
+_pipeline_lock = asyncio.Lock()
+_running: str | None = None
+
+
+def running() -> str | None:
+    """The name of the job holding the pipeline right now, or None."""
+    return _running
 
 
 def ingest_running() -> bool:
-    return _ingest_lock.locked()
+    return _running == "ingest"
+
+
+async def _with_pipeline(name: str, work) -> None:
+    """Run `work(client, store, backend, sources)` as the one pipeline job.
+
+    Waits for the lock rather than skipping: under the queue the two jobs
+    never overlap anyway, and an edition that is due while a gather is still
+    running comes out late rather than not at all.
+    """
+    global _running
+    async with _pipeline_lock:
+        _running = name
+        sources = config.load_sources()
+        store = open_store(config.store_url())
+        backend = make_backend(config.llm_backend())
+        try:
+            async with client_context() as client:
+                await work(client, store, backend, sources)
+        finally:
+            _running = None
+            await backend.aclose()
+            await store.close()
+
+
+async def prepare() -> None:
+    """gather → summarize → rewrite, and nothing else. The hourly job.
+
+    Leaves the store fuller and the site untouched: no topics, no edition, no
+    hook. Whatever it writes waits in the store for the next `ingest`, which
+    then has a few stragglers to process instead of a whole day's feeds.
+    """
+    async def _work(client, store, backend, sources):
+        await cmd_prepare(client, store, backend, sources, config.workers())
+
+    await _with_pipeline("prepare", _work)
 
 
 async def ingest() -> None:
-    """gather → summarize → rewrite → topics, then the optional delivery hook.
+    """gather → summarize → rewrite → topics → edition, then the delivery hook.
 
     Topics run last inside `cmd_ingest` and before the edition is assembled,
     which is the only order that works: the stage reads the finished articles
     to decide what this edition's sections are, and the assemble step then
     lays the paper out along them.
     """
-    if _ingest_lock.locked():
-        return
-    async with _ingest_lock:
-        sources = config.load_sources()
+    async def _work(client, store, backend, sources):
         standing = standing_topics(config.load_topics())
-        store = open_store(config.store_url())
-        backend = make_backend(config.llm_backend())
+        await cmd_ingest(
+            client, store, backend, sources, config.workers(), standing
+        )
+
+        # Assemble the edition here rather than leaving it to whoever loads
+        # the site first. An unattended box has to end every ingest with a
+        # row in the archive, otherwise the archive records when someone
+        # happened to visit, not what was published.
+        snapshot = None
         try:
-            async with client_context() as client:
-                await cmd_ingest(
-                    client, store, backend, sources, config.workers(), standing
-                )
+            key = await current_key(store, sources)
+            # snapshot=True: this is the ingest's own build, after
+            # the pipeline has drained, so the paper is complete.
+            built = await build_edition_for_key(
+                key, store, sources, snapshot=True
+            )
+            if built.total:
+                snapshot = archive.snapshot_path(config.cache_dir(), key)
+                await warm_icons(built)
+        except Exception as e:
+            _log(f"[post-ingest build] {e}")
 
-            # Assemble the edition here rather than leaving it to whoever loads
-            # the site first. An unattended box has to end every ingest with a
-            # row in the archive, otherwise the archive records when someone
-            # happened to visit, not what was published.
-            snapshot = None
+        # The hook is an executable on the container's filesystem (usually
+        # dropped in via the bind volume) that receives the freshly-written
+        # edition snapshot as its single argument. Useful for mailing the
+        # day's paper somewhere, pushing it to a reader, archiving it off
+        # the box, etc.
+        hook = config.post_ingest_hook()
+        if hook and snapshot is not None:
             try:
-                key = await current_key(store, sources)
-                # snapshot=True: this is the ingest's own build, after
-                # the pipeline has drained, so the paper is complete.
-                built = await build_edition_for_key(
-                    key, store, sources, snapshot=True
-                )
-                if built.total:
-                    snapshot = archive.snapshot_path(config.cache_dir(), key)
-                    await warm_icons(built)
+                await run_hook(hook, snapshot)
             except Exception as e:
-                _log(f"[post-ingest build] {e}")
+                _log(f"[post-ingest hook] {e}")
 
-            # The hook is an executable on the container's filesystem (usually
-            # dropped in via the bind volume) that receives the freshly-written
-            # edition snapshot as its single argument. Useful for mailing the
-            # day's paper somewhere, pushing it to a reader, archiving it off
-            # the box, etc.
-            hook = config.post_ingest_hook()
-            if hook and snapshot is not None:
-                try:
-                    await run_hook(hook, snapshot)
-                except Exception as e:
-                    _log(f"[post-ingest hook] {e}")
-        finally:
-            await backend.aclose()
-            await store.close()
+    await _with_pipeline("ingest", _work)
 
 
 # The job registry: the same names, arguments and semantics under the
 # in-process queue and under arq.
-JOBS = {"ingest": ingest}
+JOBS = {"prepare": prepare, "ingest": ingest}
