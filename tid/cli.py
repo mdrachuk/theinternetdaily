@@ -43,7 +43,7 @@ def _load_topics(path: Path) -> list[Topic]:
 
 
 # Network-bound article extraction: many in flight is fine, but not unbounded
-# — trafilatura's parse runs in a thread and the pool is finite.
+# — trafilatura's parse runs in a small process pool (see extract.py).
 FETCH_CONCURRENCY = 8
 
 

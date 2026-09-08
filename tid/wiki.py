@@ -16,7 +16,7 @@ from typing import Optional
 import httpx
 import trafilatura
 
-from .extract import fetch_html
+from .extract import fetch_html, in_parser_process
 from .llm import LLMBackend
 
 
@@ -129,6 +129,10 @@ def _bullets_from_text(text: str) -> list[dict]:
     return items
 
 
+def _extract_main_page(html: str) -> str:
+    return trafilatura.extract(html, include_comments=False) or ""
+
+
 def _extract_plain(html: str) -> str:
     return trafilatura.extract(
         html,
@@ -147,7 +151,7 @@ async def _parse_current_events_day(
         html = await fetch_html(client, url)
         if not html:
             return []
-        text = await asyncio.to_thread(_extract_plain, html)
+        text = await in_parser_process(_extract_plain, html)
     except Exception:
         return []
     return _bullets_from_text(text)
@@ -321,9 +325,7 @@ async def fetch_did_you_know(client: httpx.AsyncClient, limit: int = 4) -> list[
         html = await fetch_html(client, "https://en.wikipedia.org/wiki/Main_Page")
         if not html:
             return []
-        text = await asyncio.to_thread(
-            lambda h: trafilatura.extract(h, include_comments=False) or "", html
-        )
+        text = await in_parser_process(_extract_main_page, html)
     except Exception:
         return []
     return _dyk_from_text(text, limit)
