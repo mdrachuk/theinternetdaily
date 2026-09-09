@@ -333,6 +333,21 @@ async def test_icon_route_serves_a_cached_mark(client, cache):
     assert r.headers["content-type"] == "image/png"
 
 
+async def test_icon_route_tells_the_browser_what_the_file_really_is(client, cache):
+    """The URL says .png for every mark; the bytes may be a JPEG, and the
+    content type must say so."""
+    import tid.icons as icons
+
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 60
+    path = icons.icon_path(cache, "techcrunch.com")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(jpeg)
+    r = await client.get("/icon/techcrunch.com.png")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
+    assert r.content == jpeg
+
+
 # --- the site shows editions, not the store --------------------------------
 
 async def test_index_is_the_newest_snapshot_not_the_store(

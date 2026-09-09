@@ -267,7 +267,7 @@ def create_app(queue=None) -> FastAPI:
         path = icons.icon_path(cache, domain) if icons.is_domain(domain) else None
         if path is None:
             raise HTTPException(status_code=404, detail="not a domain")
-        if not path.exists():
+        if not icons.is_fresh(path):
             try:
                 async with client_context() as client:
                     await icons.fetch_icon(client, cache, domain)
@@ -278,8 +278,10 @@ def create_app(queue=None) -> FastAPI:
                 icons.BLANK_PNG, media_type="image/png",
                 headers={"Cache-Control": "public, max-age=3600"},
             )
+        # The file is named .png whatever it holds; tell the browser the truth.
+        kind = icons.media_type(path.read_bytes()) or "image/png"
         return FileResponse(
-            path, media_type="image/png",
+            path, media_type=kind,
             headers={"Cache-Control": "public, max-age=604800"},
         )
 
