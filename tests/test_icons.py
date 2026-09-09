@@ -96,6 +96,66 @@ async def test_a_failed_lookup_caches_the_blank_rather_than_retrying_forever(
     assert out is not None and out.read_bytes() == icons.BLANK_PNG
 
 
+# Google returns whatever the site publishes. A byte-exact JPEG header is
+# enough to stand in for one; the browser never sees the fake pixels.
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 60
+
+
+async def test_a_jpeg_mark_is_kept_not_thrown_away(tmp_path):
+    """A third of the blank bylines in production were sites whose favicon
+    Google hands back as JPEG. The PNG-only check turned all of them into
+    the blank; any image a browser can paint is a mark."""
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, content=JPEG,
+                                 headers={"content-type": "image/jpeg"}))
+    async with httpx.AsyncClient(transport=transport) as client:
+        out = await icons.fetch_icon(client, tmp_path, "techcrunch.com")
+    assert out is not None and out.read_bytes() == JPEG
+    assert icons.media_type(out.read_bytes()) == "image/jpeg"
+
+
+@pytest.mark.parametrize("blob,expected", [
+    (icons.BLANK_PNG, "image/png"),
+    (JPEG, "image/jpeg"),
+    (b"GIF89a" + b"\x00" * 10, "image/gif"),
+    (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
+    (b"\x00\x00\x01\x00\x01\x00", "image/x-icon"),
+    (b"RIFF\x00\x00\x00\x00WAVEfmt ", None),
+    (b"<!doctype html><title>404</title>", None),
+    (b"", None),
+])
+def test_media_type_by_magic_bytes(blob, expected):
+    assert icons.media_type(blob) == expected
+
+
+async def test_a_stale_blank_is_looked_up_again(tmp_path):
+    """A miss is cached for a day, not forever: a blank left by a network
+    blip (or by an older tid that discarded JPEGs) heals at the next ingest
+    rather than standing until someone deletes the file by hand."""
+    import os
+    import time
+
+    out = icons.icon_path(tmp_path, "lwn.net")
+    out.parent.mkdir(parents=True)
+    out.write_bytes(icons.BLANK_PNG)
+    assert icons.is_fresh(out), "a blank written just now still stands"
+
+    stale = time.time() - icons.BLANK_TTL - 60
+    os.utime(out, (stale, stale))
+    assert not icons.is_fresh(out)
+
+    transport = httpx.MockTransport(
+        lambda r: httpx.Response(200, content=JPEG))
+    async with httpx.AsyncClient(transport=transport) as client:
+        await icons.fetch_icon(client, tmp_path, "lwn.net")
+    assert out.read_bytes() == JPEG
+    assert icons.is_fresh(out), "a real icon never expires"
+
+
+def test_a_missing_file_is_not_fresh(tmp_path):
+    assert not icons.is_fresh(tmp_path / "nope.png")
+
+
 async def test_fetch_icon_refuses_a_non_domain(tmp_path):
     async with httpx.AsyncClient(transport=httpx.MockTransport(
         lambda r: pytest.fail("must not reach the network")

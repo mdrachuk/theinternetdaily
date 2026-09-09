@@ -13,6 +13,7 @@ browser with no connection at all.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -33,6 +34,48 @@ BLANK_PNG = bytes.fromhex(
     "00001f15c4890000000b49444154789c6360000200000500017a5e"
     "ab3f0000000049454e44ae426082"
 )
+
+# How long a miss stands before it is looked up again. A site with no favicon
+# is rare and stable, so a day is plenty; what the day buys is that a blank
+# cached during a network blip, or by an older tid that did not understand the
+# reply, heals at the next ingest instead of standing forever.
+BLANK_TTL = 24 * 60 * 60
+
+# The formats a browser will paint in an <img>. Google hands back whatever the
+# site itself publishes — mostly PNG, but JPEG for a good third of the web,
+# and the odd GIF, WebP or .ico — so accepting only PNG left every byline from
+# those sites blank. The URL keeps its `.png` suffix as a name; the bytes are
+# served with the type they really are.
+_MAGIC: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF8", "image/gif"),
+    (b"RIFF", "image/webp"),
+    (b"\x00\x00\x01\x00", "image/x-icon"),
+)
+
+
+def media_type(blob: bytes) -> str | None:
+    """The MIME type of an icon blob by its magic bytes, or None if it is
+    not an image a browser can show (an HTML error page, say)."""
+    for magic, kind in _MAGIC:
+        if blob.startswith(magic):
+            if kind == "image/webp" and blob[8:12] != b"WEBP":
+                return None
+            return kind
+    return None
+
+
+def is_fresh(path: Path) -> bool:
+    """Whether a cached mark still stands: a real icon always does, a blank
+    only until BLANK_TTL has passed since it was written."""
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if st.st_size != len(BLANK_PNG) or path.read_bytes() != BLANK_PNG:
+        return True
+    return time.time() - st.st_mtime < BLANK_TTL
 
 
 def is_domain(value: str) -> bool:
@@ -71,7 +114,7 @@ async def fetch_icon(
     if not is_domain(domain):
         return None
     out = icon_path(cache_dir, domain)
-    if out.exists():
+    if is_fresh(out):
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -81,9 +124,9 @@ async def fetch_icon(
     except httpx.HTTPError:
         blob = b""
     # Negative results are cached too, as the blank: a domain with no favicon
-    # would otherwise be re-fetched on every page view forever.
+    # would otherwise be re-fetched on every page view, rather than once a day.
     tmp = out.with_suffix(".png.tmp")
-    tmp.write_bytes(blob if blob.startswith(b"\x89PNG") else BLANK_PNG)
+    tmp.write_bytes(blob if media_type(blob) else BLANK_PNG)
     tmp.replace(out)
     return out
 

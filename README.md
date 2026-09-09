@@ -444,7 +444,11 @@ so nothing can render them as a page. Saying so beats hiding them.
 At roughly 300–800 KB per snapshot and one or two editions a day, the cache
 grows by a few hundred MB a year. There is no automatic pruning; `rm` the old
 `{key}.json` files when you want the space back. Cached source marks live in
-`archive/cache/icons/` and are a few KB each.
+`archive/cache/icons/` and are a few KB each. Every file there is named
+`.png`, but holds whatever the site publishes — PNG, JPEG, GIF, WebP or ICO —
+and is served with its real type. A domain Google has no icon for is cached as
+a 1×1 blank for a day and then asked about again, so a miss caused by a network
+blip heals at the next ingest.
 
 ## Configuring sources
 
@@ -917,7 +921,8 @@ can't surprise you above whatever you set.
   from Google's s2 service, but your browser never talks to it: the server
   fetches each domain's icon once — usually during ingest, before anyone has
   asked — caches it to `archive/cache/icons/`, and serves it from this origin.
-  The only host contacted is Google's, once per domain, from the box.
+  The only host contacted is Google's, once per domain (once a day for a
+  domain that has no icon), from the box.
 - The one third-party request a page does make is Google Fonts, for the two
   faces. Delete the two `<link>` tags in
   [`tid/templates/layout.html`](tid/templates/layout.html) if you would rather

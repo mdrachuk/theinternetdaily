@@ -136,7 +136,7 @@ async def warm_icons(edition: ed.Edition) -> int:
     domains = {icons.domain_for(i.url) for i in edition.items}
     domains.discard("")
     cache = config.cache_dir()
-    todo = [d for d in domains if not icons.icon_path(cache, d).exists()]
+    todo = [d for d in domains if not icons.is_fresh(icons.icon_path(cache, d))]
     if not todo:
         return 0
     async with client_context() as client:
