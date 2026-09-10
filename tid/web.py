@@ -273,13 +273,19 @@ def create_app(queue=None) -> FastAPI:
                     await icons.fetch_icon(client, cache, domain)
             except Exception:
                 pass
-        if not path.exists():
+        blob = path.read_bytes() if path.exists() else icons.BLANK_PNG
+        # A real mark may sit in the browser for a week; a blank only for an
+        # hour. The cache on disk retries a blank after a day, and that heal
+        # is worth nothing if every browser that saw the blank keeps it for
+        # a week — which is how the front page stayed empty of marks for a
+        # day after the JPEG fix had already landed on the server.
+        if blob == icons.BLANK_PNG:
             return Response(
-                icons.BLANK_PNG, media_type="image/png",
+                blob, media_type="image/png",
                 headers={"Cache-Control": "public, max-age=3600"},
             )
         # The file is named .png whatever it holds; tell the browser the truth.
-        kind = icons.media_type(path.read_bytes()) or "image/png"
+        kind = icons.media_type(blob) or "image/png"
         return FileResponse(
             path, media_type=kind,
             headers={"Cache-Control": "public, max-age=604800"},

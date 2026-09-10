@@ -448,7 +448,8 @@ grows by a few hundred MB a year. There is no automatic pruning; `rm` the old
 `.png`, but holds whatever the site publishes — PNG, JPEG, GIF, WebP or ICO —
 and is served with its real type. A domain Google has no icon for is cached as
 a 1×1 blank for a day and then asked about again, so a miss caused by a network
-blip heals at the next ingest.
+blip heals at the next ingest. Browsers are told to keep a real mark for a
+week and a blank for an hour, so a heal on the server reaches the page soon.
 
 ## Configuring sources
 

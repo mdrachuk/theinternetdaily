@@ -229,3 +229,32 @@ def test_the_first_inline_img_is_the_last_resort():
 
 def test_an_entry_with_no_image_yields_none():
     assert _entry_image(_entry("<description>Just words.</description>")) is None
+
+
+# --- the route: how long a browser may keep what it was handed ------------
+
+async def test_the_route_lets_a_browser_keep_a_blank_only_an_hour(
+    tmp_path, monkeypatch
+):
+    """The disk cache retries a blank after a day. That heal reached nobody:
+    the route sent every file with a week's max-age, so a browser that once
+    saw the blank kept showing it long after the server had the real mark.
+    A real mark may stay a week; a blank an hour, like a failed lookup."""
+    from tid import web
+
+    monkeypatch.setenv("TID_CACHE", str(tmp_path))
+    icons.icon_path(tmp_path, "blank.example").parent.mkdir(parents=True)
+    icons.icon_path(tmp_path, "blank.example").write_bytes(icons.BLANK_PNG)
+    icons.icon_path(tmp_path, "mark.example").write_bytes(JPEG)
+
+    transport = httpx.ASGITransport(app=web.create_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        blank = await c.get("/icon/blank.example.png")
+        mark = await c.get("/icon/mark.example.png")
+
+    assert blank.status_code == 200
+    assert blank.content == icons.BLANK_PNG
+    assert blank.headers["cache-control"] == "public, max-age=3600"
+    assert mark.status_code == 200
+    assert mark.headers["content-type"] == "image/jpeg"
+    assert mark.headers["cache-control"] == "public, max-age=604800"
