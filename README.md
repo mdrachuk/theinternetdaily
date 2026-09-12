@@ -68,9 +68,10 @@ Everything you'd normally want to change is in **two files**:
 
 - **`sources.toml`** — which feeds, how many items per feed, which section
   each one files under, in what order; and the paper's standing sections
-  (`[[topic]]`), which every edition's topic set starts from. Two source
-  kinds today: `kind = "hn"` (Hacker News, top-by-points via the Algolia API)
-  and `kind = "rss"` (any Atom/RSS feed via feedparser).
+  (`[[topic]]`), which every edition's topic set starts from. Three source
+  kinds today: `kind = "hn"` (Hacker News, top-by-points via the Algolia API),
+  `kind = "rss"` (any Atom/RSS feed via feedparser) and `kind = "youtube"` (a
+  channel's uploads, with the player on the article's page).
 - **`tid/templates/`** — the paper itself. `style.css` is every colour,
   size and breakpoint; `edition.html`, `article.html` and `sources.html` are
   the three pages. Edit, restart the container, refresh.
@@ -470,7 +471,10 @@ Two fields shape the layout rather than the contents, and both are optional:
 | `medium`  | `"read"`      | `read`, `watch` or `listen`. Drives the glyph in the byline and the filter row in the nav. |
 
 Note `medium` is not `kind`: `kind` is *what sort of source this is*
-(`rss`/`hn`), `medium` is *what you do with it*.
+(`rss`/`hn`/`youtube`), `medium` is *what you do with it*. A YouTube channel
+is `kind = "youtube"` *and* `medium = "watch"`: the first says how it is
+gathered and shown, the second puts the play glyph in its byline and the
+Watch chip in the nav.
 
 ### Source types
 
@@ -482,10 +486,14 @@ Note `medium` is not `kind`: `kind` is *what sort of source this is*
   comment count, and those live in the row's `extra` under the type's own
   keys.
 - **how items are loaded and parsed** — feedparser over a feed URL, or the
-  Algolia search API ranked by points.
-- **how an article is displayed**: the chips in its byline, and the "open"
-  buttons on its page and in the preview drawer. Each chip is a place the
-  reader can go, with the favicon of where it leads.
+  Algolia search API ranked by points — and, if the type says so, **how the
+  body is obtained**. The default is to fetch the URL and read it with
+  trafilatura; a YouTube video's type answers from the feed instead, since
+  there is no page to read.
+- **how an article is displayed**: the chips in its byline, the "open"
+  buttons on its page and in the preview drawer, and what its page frames
+  where an article prints its photograph — for a video, the player. Each
+  chip is a place the reader can go, with the favicon of where it leads.
 
 For a feed article that is one chip, the source, pointing at the piece. For a
 Hacker News story it is two — **[Hacker News] → [github.com]** — the first
@@ -497,8 +505,9 @@ store; a row gathered before the fields existed is back-filled by the next
 gather that sees the story, and shows the plain source link until then.
 
 Adding a kind is one module with a class satisfying `SourceType` — `fetch`
-and `links` — registered in `tid/sources/__init__.py`. Nothing else in the
-pipeline names a kind.
+and `links`, plus `extract` and `embed` if the type has its own answers —
+registered in `tid/sources/__init__.py`. Nothing else in the pipeline names
+a kind.
 
 World news, quote of the day, and the "Did you know…" nuggets are not
 configured here — they are PDF cover decorations, fetched fresh by
@@ -551,6 +560,46 @@ kind        = "rss"
 section     = "Science & Maths"
 url         = "https://www.quantamagazine.org/feed/"
 since_hours = 168   # one week
+```
+
+### `kind = "youtube"` — a channel's uploads
+
+The channel's public URL is enough: the handle is resolved to the channel id
+through the channel page (once per process), and the uploads come from the
+Atom feed YouTube publishes for every channel — its last fifteen videos.
+
+A video is not read. The watch page is a script bundle with no text in it,
+and the caption track is served by an endpoint that refuses cloud addresses,
+so nothing is fetched from it. The body is the video's **description** from
+the feed, which is what the summary is written from and what the article
+page prints under the player. The one request made per new video is for the
+widescreen still, which YouTube renders for most uploads; the letterboxed one
+the feed names is the fallback.
+
+On the front page a video is a headline with its still, the play glyph in the
+byline and the date in place of a reading time. Its page holds the **player**
+where an article's photograph would be: the still with a play mark, and one
+click swaps in the frame — from `youtube-nocookie.com`, so the video host is
+not contacted until play is pressed. With scripting off, or on a reader with
+no player to speak of, the still is a link to the video. The preview drawer's
+button reads "Watch it here" rather than "Read the full text".
+
+| field         | type   | default  | meaning |
+|---------------|--------|----------|---------|
+| `name`        | string | required | display label, shown in every byline |
+| `kind`        | string | required | must be `"youtube"` |
+| `url`         | string | required | the channel: `https://www.youtube.com/@handle`, a `/channel/UC…` link, or a bare channel id |
+| `section`     | string | the name | fallback column, when the topics stage does not file it |
+| `medium`      | string | `"read"` | set it to `"watch"` — the type does not do this for you |
+| `since_hours` | int    | unset    | don't gather videos published more than N hours ago |
+
+```toml
+[[source]]
+name    = "Fireship"
+kind    = "youtube"
+section = "Video"
+medium  = "watch"
+url     = "https://www.youtube.com/@Fireship"
 ```
 
 ### How big an edition gets
@@ -949,6 +998,7 @@ theinternetdaily/
 │   │   ├── base.py       #   RawItem, Link, the SourceType protocol
 │   │   ├── rss.py        #   kind = "rss": feedparser, one chip
 │   │   ├── hn.py         #   kind = "hn": Algolia, discussion + link chips
+│   │   ├── youtube.py    #   kind = "youtube": channel feed, player on the page
 │   │   └── wikipedia.py  #   kind = "wikipedia_events"
 │   ├── fetch.py          # compatibility re-exports of the fetchers
 │   ├── extract.py        # trafilatura

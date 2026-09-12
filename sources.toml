@@ -1,11 +1,14 @@
 # Add, remove, or reorder sources here.
-# kind        = "hn" | "rss"    the SOURCE TYPE (tid/sources/). Not a label:
+# kind        = "hn" | "rss" | "youtube"
+#                               the SOURCE TYPE (tid/sources/). Not a label:
 #                               it decides what a record carries beyond the
 #                               standard fields, how items are fetched and
 #                               parsed, and how an article is shown. An "rss"
 #                               article gets one byline chip, its source; an
 #                               "hn" story gets two — [Hacker News] for the
-#                               discussion, then the site it links to.
+#                               discussion, then the site it links to; a
+#                               "youtube" video's page holds the player, and
+#                               its text is the video's description.
 # section     = "Science & Maths"   FALLBACK column. The paper's columns are
 #                               named per edition by the topics stage, which
 #                               reads the day's headlines and files each
@@ -129,6 +132,25 @@ kind = "rss"
 # hence the CMU font fallback in the template for Cyrillic.
 url = "https://meduza.io/rss/all"
 since_hours = 48
+
+# --- Video ---------------------------------------------------------------
+# A YouTube channel by its public URL. The channel's feed carries its last
+# fifteen uploads; nothing is fetched from the watch page, so the body is the
+# description and the article page plays the video.
+
+[[source]]
+name = "Fireship"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@Fireship"
+
+[[source]]
+name = "vlogbrothers"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@vlogbrothers"
 
 # --- Aggregator (last on purpose; mostly social, occasional gems) --------
 

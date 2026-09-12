@@ -47,6 +47,9 @@ class RawItem:
     # The type's own fields, stored on the row as they are. JSON-shaped: the
     # SQLite store keeps them as a JSON column, Mongo as a subdocument.
     extra: dict[str, Any] = field(default_factory=dict)
+    # The body, when the fetch already has it — a video's description, say —
+    # so the type's `extract` need not go and get one.
+    text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,3 +86,14 @@ class SourceType(Protocol):
         from the stored record alone, so an archived edition renders the same
         chips years later without the config."""
         ...
+
+    # Two more a type *may* define; `tid.sources` checks for them by name.
+    #
+    #   async def extract(self, client, item: RawItem) -> Article | None
+    #       The body of one new item. The default, for a type without one, is
+    #       to fetch the URL and run trafilatura over it — right for a page,
+    #       useless for a video, whose type answers from the feed instead.
+    #
+    #   def embed(self, url: str, extra: dict) -> str
+    #       A URL the article page can put in a frame — a video player. ""
+    #       (or no method) means the page prints the photograph as usual.

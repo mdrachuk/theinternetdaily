@@ -13,7 +13,6 @@ import httpx
 
 from . import config
 from . import sources as source_types
-from .extract import extract
 from .http import client_context
 from .llm import LLMBackend, make_backend
 from .render import build_pdf
@@ -92,7 +91,7 @@ async def cmd_gather(
 
     async def _extract_one(it: RawItem):
         async with sem:
-            return it, await extract(client, it.url, it.title, it.source)
+            return it, await source_types.extract(client, it)
 
     for src in sources:
         _log(f"[gather] {src['name']}")

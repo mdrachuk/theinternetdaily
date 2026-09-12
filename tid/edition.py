@@ -167,18 +167,23 @@ def _to_int(value: Any) -> int | None:
 
 def _to_item(a: dict) -> Item:
     body = a.get("text") or ""
+    medium = a.get("medium") or "read"
     return Item(
         id=a.get("id") or "",
         title=a.get("title") or "",
         url=a.get("url") or "",
         source=a.get("source") or "",
         section=a.get("section") or a.get("source") or "Elsewhere",
-        medium=a.get("medium") or "read",
+        medium=medium,
         # The summary is the dek. When summarizing failed the headline has to
         # carry the story on its own, which is what the design does for every
         # item below the top of a column anyway.
         dek=(a.get("summary") or "").strip(),
-        meta=reading_time(body) or (a.get("date") or ""),
+        # A reading time only for something that is read: a video's body is
+        # its description, and timing that would put "2 min" on an hour's
+        # talk. Anything else gets its date.
+        meta=(reading_time(body) if medium == "read" else "")
+             or (a.get("date") or ""),
         date=a.get("date") or "",
         iso_date=a.get("iso_date") or "",
         image=a.get("image") or None,

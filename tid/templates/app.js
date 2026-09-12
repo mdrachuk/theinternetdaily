@@ -31,6 +31,9 @@
     else { el.image.removeAttribute("src"); el.image.hidden = true; }
     el.read.href = d.read || "#";
     el.read.hidden = !d.read;
+    // "Read the full text" for an article, "Watch it here" for a video: the
+    // page behind the button holds the text or the player.
+    el.read.textContent = d.cta || "Read the full text";
     // One button per chip in the byline — the discussion and the link for a
     // Hacker News story, the source alone for a feed. Read from the card, so
     // the source type's decision is made once, in the template.
