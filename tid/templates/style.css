@@ -406,6 +406,44 @@ img { max-width: 100%; }
 .read .foot { margin-top: 30px; padding-top: 18px; border-top: 1px solid var(--rule);
               display: flex; gap: 10px; flex-wrap: wrap; }
 
+/* A video's player. The still is cropped to the frame's own 16:9 — the
+ * guaranteed thumbnail is 4:3 with black bars above and below the picture,
+ * and the crop is exactly those bars — with the play mark over it, and the
+ * frame that replaces it on click takes the same box, so nothing moves. */
+.read .player {
+  display: block;
+  position: relative;
+  margin-top: 22px;
+  aspect-ratio: 16 / 9;
+  background: var(--ink);
+}
+.read .player .photo { height: 100%; margin: 0; aspect-ratio: auto; object-fit: cover; }
+.read .player .play {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 64px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .72);
+  color: #fff;
+  transition: transform .12s ease-out, background .12s ease-out;
+}
+.read .player .play svg { width: 30px; height: 30px; margin-left: 3px; }
+.read .player:hover .play { background: var(--ink); transform: scale(1.06); }
+.read .player:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.read .player-frame {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin-top: 22px;
+  border: 0;
+  background: var(--ink);
+}
+
 /* --- subscriptions ------------------------------------------------------ */
 
 .subs { padding: 24px var(--pad) 34px; }

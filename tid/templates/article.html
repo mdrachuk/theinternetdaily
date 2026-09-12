@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
-{% from "_macros.html" import byline, open_buttons, photo %}
+{% from "_macros.html" import byline, open_buttons, photo, player %}
+{% set embed = item|embed %}
 {% block title %}{{ item.title }} — The Internet Daily{% endblock %}
 
 {% block body %}
@@ -19,9 +20,11 @@
       {{ byline(item, top=True) }}
       <h1>{{ item.title }}</h1>
       {%- if item.dek %}<p class="dek">{{ item.dek }}</p>{% endif %}
-      {%- if item.image %}{{ photo(item.image) }}{% endif %}
+      {%- if embed %}{{ player(item, embed) }}{% elif item.image %}{{ photo(item.image) }}{% endif %}
       {%- if item.body %}
       <div class="text">{{ item.body|article_html }}</div>
+      {%- elif embed %}
+      <p class="note">The channel published this one without a description.</p>
       {%- else %}
       <p class="note">This one could not be read in full. The headline and summary are all the feed gave up.</p>
       {%- endif %}
@@ -29,11 +32,32 @@
         <a class="btn" href="{{ back }}">← Back to the edition</a>
         {{ open_buttons(item, cls="btn quiet") }}
       </div>
+      {%- if embed %}
+      <p class="note small">From {{ item.source }}{% if item.date %} · {{ item.date }}{% endif %}. The text is the video's own description; the video plays here, from YouTube.</p>
+      {%- else %}
       <p class="note small">From {{ item.source }}{% if item.date %} · {{ item.date }}{% endif %}. Read it at the source if the extraction lost something.</p>
+      {%- endif %}
     </article>
 {% endblock %}
 
 {% block after %}
+{%- if embed %}
+{# The still becomes the player on click. A modifier click, or a click with
+   no script, is a link to the video itself. #}
+<script>document.addEventListener("click", function (e) {
+  var p = e.target.closest(".player[data-embed]");
+  if (!p || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+  e.preventDefault();
+  var f = document.createElement("iframe");
+  f.className = "player-frame";
+  f.src = p.dataset.embed + "?autoplay=1";
+  f.title = p.getAttribute("aria-label") || "Video";
+  f.allow = "autoplay; encrypted-media; picture-in-picture; fullscreen";
+  f.allowFullscreen = true;
+  f.referrerPolicy = "strict-origin-when-cross-origin";
+  p.replaceWith(f);
+});</script>
+{%- endif %}
 {%- if needs_math %}
 {# Only loaded when the body actually contains TeX. Quanta and Terence Tao
    need it; MacRumors never will, and should not pay for the script. If it

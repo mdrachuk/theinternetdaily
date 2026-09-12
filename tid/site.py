@@ -91,6 +91,22 @@ def links(item: Item) -> list[Link]:
     return sources.links_for(item)
 
 
+def embed(item: Item) -> str:
+    """What the article page frames in place of the photograph — a video's
+    player — or "" for a piece that has nothing to play."""
+    return sources.embed_for(item)
+
+
+# The preview drawer's one button, per medium. It leads to the article's own
+# page either way; what the reader finds there is the text, or the player.
+_CTA = {"read": "Read the full text", "watch": "Watch it here",
+        "listen": "Listen here"}
+
+
+def cta(medium: str) -> str:
+    return _CTA.get(medium, _CTA["read"])
+
+
 def has_math(body: str) -> bool:
     return bool(_TEX_RE.search(body or ""))
 
@@ -156,6 +172,8 @@ def env() -> jinja2.Environment:
         read_url=read_url,
         glyph=glyph,
         filter_glyph=filter_glyph,
+        embed=embed,
+        cta=cta,
         icon=icon,
         links=links,
         article_html=article_html,

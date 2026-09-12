@@ -35,6 +35,7 @@
          data-url="{{ item.url }}"
          data-read="{{ item|read_url(edition_key) }}"
          data-dek="{{ item.dek }}"
+         data-cta="{{ item.medium|cta }}"
          data-image="{{ item.image or '' }}">
   {{- byline(item, top=top) }}
   <a class="hla pv-open" href="{{ item.url }}" target="_blank" rel="noopener noreferrer">
@@ -61,4 +62,17 @@
 
 {% macro photo(src, alt="") -%}
 <img class="photo" src="{{ src }}" alt="{{ alt }}" loading="lazy" referrerpolicy="no-referrer">
+{%- endmacro %}
+
+{# A video's player, where the article page would print the photograph. It
+   starts as the still with a play mark over it and a link to the video, so
+   nothing from the video host is fetched until play is pressed, and a paper
+   read with scripting off — or on a reader with no player to speak of —
+   still opens the video where it lives. The script on the article page swaps
+   in the frame on click. #}
+{% macro player(item, src) -%}
+<a class="player" href="{{ item.url }}" target="_blank" rel="noopener noreferrer" data-embed="{{ src }}" aria-label="Play: {{ item.title }}">
+  {%- if item.image %}<img class="photo" src="{{ item.image }}" alt="" referrerpolicy="no-referrer">{% endif %}
+  <span class="play" aria-hidden="true"><svg viewBox="0 0 16 16" focusable="false"><path fill="currentColor" d="M4.5 2.6l8.2 5.1a.35.35 0 010 .6L4.5 13.4a.35.35 0 01-.55-.3V2.9a.35.35 0 01.55-.3z"/></svg></span>
+</a>
 {%- endmacro %}
