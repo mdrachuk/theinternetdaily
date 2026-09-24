@@ -39,7 +39,7 @@ def _algolia(request: httpx.Request) -> httpx.Response:
 # --- the registry ---------------------------------------------------------
 
 def test_every_shipped_kind_is_registered():
-    assert {"rss", "hn", "wikipedia_events"} <= set(sources.TYPES)
+    assert {"rss", "hn", "lobsters", "wikipedia_events", "youtube"} <= set(sources.TYPES)
     for kind, t in sources.TYPES.items():
         assert t.kind == kind and t.label
 

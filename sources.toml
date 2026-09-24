@@ -1,12 +1,13 @@
 # Add, remove, or reorder sources here.
-# kind        = "hn" | "rss" | "youtube"
+# kind        = "hn" | "lobsters" | "rss" | "youtube"
 #                               the SOURCE TYPE (tid/sources/). Not a label:
 #                               it decides what a record carries beyond the
 #                               standard fields, how items are fetched and
 #                               parsed, and how an article is shown. An "rss"
 #                               article gets one byline chip, its source; an
 #                               "hn" story gets two — [Hacker News] for the
-#                               discussion, then the site it links to; a
+#                               discussion, then the site it links to, and a
+#                               "lobsters" story the same for lobste.rs; a
 #                               "youtube" video's page holds the player, and
 #                               its text is the video's description.
 # section     = "Science & Maths"   FALLBACK column. The paper's columns are
@@ -152,6 +153,76 @@ kind = "youtube"
 medium = "watch"
 url = "https://www.youtube.com/@vlogbrothers"
 
+[[source]]
+name = "Hank Green"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/channel/UCOT2iLov0V7Re7ku_3UBtcQ"
+
+[[source]]
+name = "ThePrimeTime"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@ThePrimeTimeagen"
+
+[[source]]
+name = "Kurzgesagt"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@kurzgesagt"
+
+[[source]]
+name = "Search Party"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@SearchParty"
+
+[[source]]
+name = "Wendover Productions"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@Wendoverproductions"
+
+[[source]]
+name = "Linus Tech Tips"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@LinusTechTips"
+
+[[source]]
+name = "Christophe"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@christophe"
+
+[[source]]
+name = "MKBHD"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@mkbhd"
+
+[[source]]
+name = "CGP Grey"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@CGPGrey"
+
+[[source]]
+name = "TLDR News EU"
+section = "Video"
+kind = "youtube"
+medium = "watch"
+url = "https://www.youtube.com/@TLDRnewsEU"
+
 # --- Aggregator (last on purpose; mostly social, occasional gems) --------
 
 [[source]]
@@ -161,7 +232,25 @@ kind = "hn"
 since_hours = 48
 min_points = 100
 
+# Lobsters is the quieter room: a score in the twenties is a well-read story.
+[[source]]
+name = "Lobsters"
+section = "Hacker News"
+kind = "lobsters"
+since_hours = 48
+min_points = 20
+
 # --- Disabled (uncomment to re-enable) -----------------------------------
+
+# https://www.youtube.com/@SearchParty is a 404; the closest live handles are
+# @SearchPartyPod ("Search Party Podcast") and @TheSearchParty (a true-crime
+# podcast, "coming soon"). Fill in the right one and uncomment.
+# [[source]]
+# name = "Search Party"
+# section = "Video"
+# kind = "youtube"
+# medium = "watch"
+# url = "https://www.youtube.com/@SearchParty"
 
 # [[source]]
 # name = "heise"
