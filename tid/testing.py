@@ -22,11 +22,12 @@ FAKE_LIMITS = BatchLimits(
 )
 
 _ARTICLE_ID_RE = re.compile(r"<article id=\"(\d+)\">")
-# The three topic-stage prompts, each with a marker of its own so the fake can
+# The topic-stage prompts, each with a marker of its own so the fake can
 # tell them apart the way the real backends' schemas do.
 _CANDIDATE_ID_RE = re.compile(r"<candidate id=\"(\d+)\">")
 _POSTING_ID_RE = re.compile(r"<posting id=\"(\d+)\">")
 _HEADLINE_RE = re.compile(r"<headline>")
+_IGNORED_STORY_RE = re.compile(r"<ignored-story>")
 _TOPIC_LINE_RE = re.compile(r"<topic>([^<—]+?)(?:\s+—[^<]*)?</topic>")
 _TITLE_RE = re.compile(r"<title>(.*?)</title>", re.DOTALL)
 _WANT_RE = re.compile(r"Choose (\d+) main")
@@ -82,6 +83,8 @@ class FakeBackend:
             return self._topics(json_schema is not None)
         if _HEADLINE_RE.search(user):
             return self._label(user, json_schema is not None)
+        if _IGNORED_STORY_RE.search(user):
+            return self._other(user, json_schema is not None)
         if _POSTING_ID_RE.search(user):
             return self._main(user, json_schema is not None)
         # The world-news bullets: one numbered line per input line.
@@ -122,6 +125,17 @@ class FakeBackend:
         if not names or not titles:
             return ""
         name = names[len(titles[0].strip()) % len(names)].strip()
+        return json.dumps({"topic": name}) if as_json else name
+
+    def _other(self, user: str, as_json: bool) -> str:
+        """Rescue an ignored article into the first topic when its title has
+        an even length, and answer NONE otherwise — so a test sees both."""
+        names = _TOPIC_LINE_RE.findall(user)
+        titles = _TITLE_RE.findall(user)
+        if names and titles and len(titles[0].strip()) % 2 == 0:
+            name = names[0].strip()
+        else:
+            name = "NONE"
         return json.dumps({"topic": name}) if as_json else name
 
     def _main(self, user: str, as_json: bool) -> str:

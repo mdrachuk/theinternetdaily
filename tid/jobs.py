@@ -10,6 +10,7 @@ import asyncio
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Collection
 
 from . import archive, config, edition as ed, icons
 from .cache import edition_key, ensure_dir
@@ -48,7 +49,7 @@ async def current_key(store: Store, sources: list[dict]) -> str:
 
 async def build_edition_for_key(
     key: str, store: Store, sources: list[dict],
-    *, snapshot: bool = True,
+    *, snapshot: bool = True, ignored: Collection[str] = (),
 ) -> ed.Edition:
     """Assemble the edition for `key`, snapshotting it on first request.
 
@@ -65,6 +66,11 @@ async def build_edition_for_key(
     the store all day without a single article reaching the front page early.
     `snapshot=False` is a dry run — the same paper, written nowhere and marking
     nothing.
+
+    `ignored` are the names of the config's ignored topics. An article the
+    topic stage filed under one of them is left out of the paper but marked
+    all the same: it was this edition's to drop, and left pending it would be
+    re-filed, and dropped again, by every edition after.
 
     Cheap — a store read and a JSON write, no LLM and no typesetting.
     """
@@ -89,6 +95,11 @@ async def build_edition_for_key(
             if retired:
                 _log(f"[edition] retired {retired} article(s) older than {floor}")
         articles = await collect_current_edition(store, sources, floor)
+        dropped = [a["id"] for a in articles if a["topic"] in ignored]
+        articles = [a for a in articles if a["topic"] not in ignored]
+        if dropped and not articles and snapshot:
+            # Nothing to print, but the dropped ones are still dealt with.
+            await store.mark_rendered(dropped, today)
         if not articles or not snapshot:
             built = ed.build(articles, key=key, date=today, built_at="")
             if built.total:
@@ -103,7 +114,9 @@ async def build_edition_for_key(
                     return ed.refiled(loaded, sources)
             return built
         built = archive.record(cache, key, today, articles)
-        await store.mark_rendered([a["id"] for a in articles], today)
+        await store.mark_rendered([a["id"] for a in articles] + dropped, today)
+        if dropped:
+            _log(f"[edition] left out {len(dropped)} article(s) on ignored topics")
         return built
 
 
@@ -248,7 +261,8 @@ async def ingest() -> None:
             # snapshot=True: this is the ingest's own build, after
             # the pipeline has drained, so the paper is complete.
             built = await build_edition_for_key(
-                key, store, sources, snapshot=True
+                key, store, sources, snapshot=True,
+                ignored={t.name for t in standing if t.ignored},
             )
             if built.total:
                 snapshot = archive.snapshot_path(config.cache_dir(), key)

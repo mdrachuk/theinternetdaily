@@ -18,7 +18,10 @@ from .llm import LLMBackend, make_backend
 from .render import build_pdf
 from .sources import RawItem
 from .store import ArticleRow, Store, norm_title, open_store
-from .topics import Topic, propose_topics, select_main, select_topic, standing_topics
+from .topics import (
+    Topic, propose_topics, select_main, select_other_topic, select_topic,
+    standing_topics,
+)
 from .wiki import (
     fetch_did_you_know,
     fetch_quote_of_day,
@@ -314,8 +317,15 @@ async def cmd_topics(
       1. one call naming the edition's topics, most significant first — on
          top of the `standing` sections from the config, which are always in
          the set (`tid.topics.merge_topics`);
-      2. one call per article choosing its most specific topic;
+      2. one call per article choosing its most specific topic — and, for an
+         article filed under an ignored topic, a second asking whether it
+         also belongs to one of the edition's own (`select_other_topic`);
       3. one call per topic naming that topic's main stories, in order.
+
+    `standing` is the config's `[[topic]]` list, ignored ones included. An
+    article that belongs only to an ignored topic is filed under that name
+    with no `topic_order`; `jobs.build_edition_for_key` leaves it out of the
+    paper.
 
     Runs over the whole unpublished set every time, not over "articles missing
     a topic". A topic set describes one edition: an article that was filed
@@ -336,8 +346,10 @@ async def cmd_topics(
     # sections.
     rows.sort(key=lambda r: r.sort_date, reverse=True)
 
+    ignored = [t for t in standing if t.ignored]
+    standing = [t for t in standing if not t.ignored]
     topics = await propose_topics(
-        backend, [(r.title, r.summary or "") for r in rows], standing
+        backend, [(r.title, r.summary or "") for r in rows], standing, ignored
     )
     if not topics:
         _log(f"[topics] the model named no usable topics for {len(rows)} "
@@ -353,17 +365,27 @@ async def cmd_topics(
 
     workers = _resolve_workers(backend, workers)
     sem = asyncio.Semaphore(workers)
+    ignored_names = {t.name for t in ignored}
 
     async def _label(row: ArticleRow) -> str:
         async with sem:
-            return await select_topic(
+            label = await select_topic(
+                backend, row.title, row.summary or "", [*topics, *ignored]
+            )
+            if label not in ignored_names:
+                return label
+            # About a subject the paper leaves out. It still runs if it is
+            # also about one the paper carries, under that one.
+            other = await select_other_topic(
                 backend, row.title, row.summary or "", topics
             )
+            return other or label
 
     labels = await asyncio.gather(
         *(_label(r) for r in rows), return_exceptions=True
     )
     filed: dict[str, list[ArticleRow]] = {t.name: [] for t in topics}
+    dropped: dict[str, list[ArticleRow]] = {t.name: [] for t in ignored}
     unfiled: list[ArticleRow] = []
     for row, label in zip(rows, labels):
         if isinstance(label, BaseException):
@@ -371,6 +393,8 @@ async def cmd_topics(
             unfiled.append(row)
         elif label in filed:
             filed[label].append(row)
+        elif label in dropped:
+            dropped[label].append(row)
         else:
             unfiled.append(row)
 
@@ -402,6 +426,13 @@ async def cmd_topics(
         if group:
             _log(f"  · {topic.name}: {len(group)} article(s), "
                  f"{len(picks)} main")
+    for name, group in dropped.items():
+        # Filed under the ignored name, with no place in the edition's order.
+        # The edition build recognises the name and leaves the row out.
+        for row in group:
+            await store.set_topic(row.id, name, None, None)
+        if group:
+            _log(f"  · {name} (ignored): {len(group)} article(s) dropped")
     for row in unfiled:
         # Clear rather than leave: the row may still carry a topic from the
         # previous edition, and a name this edition never chose would open a
