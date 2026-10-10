@@ -48,6 +48,11 @@
 # has no column that day. `blurb` is for the editor filing the stories, not
 # for the reader: say what belongs in the section. Delete every [[topic]] to
 # let the stage name all of the sections itself.
+#
+# `ignore = true` turns a topic into a subject the paper does NOT carry. It is
+# never a column, and the stage never names a topic of its own for it. A story
+# filed under it runs only if it also genuinely belongs to one of the
+# edition's other sections, and then under that one; otherwise it is dropped.
 
 [[topic]]
 name = "Ukraine & War"
@@ -56,10 +61,17 @@ blurb = "the war in Ukraine, its front, its diplomacy, and other wars"
 [[topic]]
 name = "russia"
 blurb = "Russian politics, society, repression and the economy at home"
+ignore = true
 
 [[topic]]
 name = "UK"
 blurb = "British politics, society and news from the United Kingdom"
+ignore = true
+
+[[topic]]
+name = "Sports"
+blurb = "sport: matches, results, athletes, clubs and tournaments"
+ignore = true
 
 [[topic]]
 name = "Apple"

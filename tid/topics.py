@@ -24,12 +24,25 @@ So the sections are derived per edition, in three passes:
      it; a standing section nothing was filed under simply has no column that
      day.
 
+     A `[[topic]]` can also be IGNORED (`ignore = true`): a subject the paper
+     does not carry. An ignored topic is never a column. The model is told the
+     paper does not cover it, so it neither names it nor invents a catch-all to
+     hold its stories, and `merge_topics` drops it if the model names it
+     anyway.
+
   2. `select_topic` — one call per article, carrying that article and the whole
      topic list, choosing the single most specific topic it belongs to.
      Deliberately not batched: the choice is per-article, and a batch makes the
      model consistent with its *neighbours in the batch* rather than with the
      topic list. Where the backend can enforce a schema the reply is an enum
      over the topic names, so an off-list answer is impossible by construction.
+
+     The ignored topics are on the filing list too, because that is how an
+     article is recognised as being about one. One that lands there gets a
+     second call, `select_other_topic`: does it ALSO genuinely belong to one of
+     the paper's sections? If so it is filed there, and runs; if not, it is
+     dropped from the edition. A story about Russia's strikes on Kyiv still
+     runs under the war; one about Moscow's municipal elections does not run.
 
   3. `select_main` — one call per topic, seeing that topic's articles, naming
      which of them are the main ones and in what order. This is what the
@@ -78,6 +91,9 @@ class Topic:
     """One section of today's paper, as the model named it."""
     name: str
     blurb: str = ""
+    # A subject the paper does not carry: filed into, never shown. See
+    # `select_other_topic`.
+    ignored: bool = False
 
     def line(self) -> str:
         return f"{self.name} — {self.blurb}" if self.blurb else self.name
@@ -87,7 +103,7 @@ def standing_topics(raw: Iterable[dict]) -> list[Topic]:
     """The configured standing sections, as `Topic`s.
 
     `raw` is what `tid.config.load_topics` returns: one dict per `[[topic]]`
-    table, `name` required, `blurb` optional. A configured name is the
+    table, `name` required, `blurb` and `ignore` optional. A configured name is the
     editor's word and is taken as written (whitespace collapsed), not put
     through `_clean_name`: that filter exists to catch a model explaining
     itself, not to second-guess a section head someone typed on purpose.
@@ -100,7 +116,12 @@ def standing_topics(raw: Iterable[dict]) -> list[Topic]:
         name = re.sub(r"\s+", " ", str(item.get("name") or "")).strip()
         if not name:
             raise ValueError(f"[[topic]] without a name: {item!r}")
-        topics.append(Topic(name, str(item.get("blurb") or "").strip()))
+        ignored = item.get("ignore", False)
+        if not isinstance(ignored, bool):
+            raise ValueError(f"[[topic]] {name!r}: ignore must be true or false")
+        topics.append(
+            Topic(name, str(item.get("blurb") or "").strip(), ignored)
+        )
     return _dedupe(topics)
 
 
@@ -111,7 +132,9 @@ def own_topic_cap(standing_count: int) -> int:
 
 
 def merge_topics(
-    proposed: Sequence[Topic], standing: Sequence[Topic]
+    proposed: Sequence[Topic],
+    standing: Sequence[Topic],
+    ignored: Sequence[Topic] = (),
 ) -> list[Topic]:
     """The edition's topic set: what the model named, made to honour the
     standing sections.
@@ -124,12 +147,14 @@ def merge_topics(
     config order: it belongs in the filing list whether or not the model
     remembered it, and the end is where a section with no stories to speak of
     belongs. The day's own topics are capped at `own_topic_cap`, so a chatty
-    model cannot push the paper past the size of a paper.
+    model cannot push the paper past the size of a paper. A topic the model
+    named that is one of the `ignored` ones is dropped: the paper does not
+    carry it, whatever the day's headlines say.
     """
     by_key = {t.name.casefold(): t for t in standing}
     cap = own_topic_cap(len(standing))
     out: list[Topic] = []
-    seen: set[str] = set()
+    seen: set[str] = {t.name.casefold() for t in ignored}
     own = 0
     for t in proposed:
         key = t.name.casefold()
@@ -181,6 +206,15 @@ _RULE_SIZE_STANDING = (
     "add a topic that merely renames a standing section.\n"
 )
 
+# Added when the paper has ignored topics, listed in <ignored>. Without it the
+# coverage rule below would have the model invent a "Russia" or a "World" to
+# hold exactly the stories the editor asked not to carry.
+_RULE_IGNORED = (
+    "- The paper does NOT cover the subjects listed in <ignored>. Never name a "
+    "topic for them or for anything that only renames them. A story that "
+    "belongs only to an ignored subject needs no topic: it will not run.\n"
+)
+
 _SYSTEM_TOPICS = (
     "You are the section editor of a daily newspaper. You are given every "
     "headline in today's edition with a short summary, and you decide what "
@@ -216,14 +250,17 @@ _SYSTEM_TOPICS_JSON = _SYSTEM_TOPICS.rsplit("OUTPUT:", 1)[0] + (
 )
 
 
-def _topics_system(as_json: bool, standing: Sequence[Topic]) -> str:
-    """The naming prompt, with the size rule that fits this paper."""
+def _topics_system(
+    as_json: bool, standing: Sequence[Topic], ignored: Sequence[Topic] = ()
+) -> str:
+    """The naming prompt, with the size rules that fit this paper."""
     base = _SYSTEM_TOPICS_JSON if as_json else _SYSTEM_TOPICS
-    if not standing:
-        return base
-    return base.replace(
-        _RULE_SIZE, _RULE_SIZE_STANDING.format(cap=own_topic_cap(len(standing)))
-    )
+    rule = _RULE_SIZE
+    if standing:
+        rule = _RULE_SIZE_STANDING.format(cap=own_topic_cap(len(standing)))
+    if ignored:
+        rule += _RULE_IGNORED
+    return base.replace(_RULE_SIZE, rule)
 
 TOPICS_SCHEMA = {
     "type": "object",
@@ -313,6 +350,7 @@ async def propose_topics(
     backend: LLMBackend,
     items: Sequence[tuple[str, str]],
     standing: Sequence[Topic] = (),
+    ignored: Sequence[Topic] = (),
 ) -> list[Topic]:
     """Name the topics of an edition, in one call over all of its headlines.
 
@@ -322,6 +360,9 @@ async def propose_topics(
     all, which still turns the stage off for the edition: a paper filed into
     standing sections by a model that could not read the day is not a paper
     the editor asked for.
+
+    `ignored` are the configured subjects the paper does not carry. They are
+    shown to the model so it leaves them out, and never come back in the set.
     """
     if not items:
         return []
@@ -340,9 +381,12 @@ async def propose_topics(
     if standing:
         listing = "\n".join(f"<topic>{t.line()}</topic>" for t in standing)
         parts.insert(0, f"<standing>\n{listing}\n</standing>")
+    if ignored:
+        listing = "\n".join(f"<topic>{t.line()}</topic>" for t in ignored)
+        parts.insert(0, f"<ignored>\n{listing}\n</ignored>")
     use_json = backend.supports_json
     reply = await backend.chat(
-        _topics_system(use_json, standing),
+        _topics_system(use_json, standing, ignored),
         "\n".join(parts),
         max_tokens=limits.topic_output_tokens,
         json_schema=TOPICS_SCHEMA if use_json else None,
@@ -352,7 +396,7 @@ async def propose_topics(
     )
     if not proposed:
         return []
-    return merge_topics(proposed, standing)
+    return merge_topics(proposed, standing, ignored)
 
 
 # --- 2. one article's topic ----------------------------------------------
@@ -454,6 +498,96 @@ async def select_topic(
         json_schema=label_schema(topics) if use_json else None,
     )
     return parse_label(reply, topics)
+
+
+# --- 2b. an ignored article's other topic ---------------------------------
+
+# The answer meaning "it belongs to none of them". It would shadow a section
+# literally named "None", which no paper has.
+NO_TOPIC = "NONE"
+
+_SYSTEM_OTHER = (
+    "You are filing a story the paper does not normally carry: it is about a "
+    "subject the paper leaves out. It runs only if it ALSO genuinely belongs "
+    "to one of today's sections.\n"
+    "\n"
+    "HARD RULES:\n"
+    "- You are given today's sections. Decide whether the story is "
+    "substantially about the subject of one of them — not whether it merely "
+    "mentions it, and not whether a broad section could be stretched to hold "
+    "it.\n"
+    f"- If it is, choose that section; if several, the MOST SPECIFIC one. If "
+    f"it is not, answer {NO_TOPIC}. When in doubt, answer {NO_TOPIC}.\n"
+    "- File on subject matter alone. The publication the story came from is "
+    "irrelevant.\n"
+    "- The story may be in any language; the section names are English.\n"
+    "- NEVER refuse. NEVER explain. NEVER ask a question.\n"
+    "\n"
+    "OUTPUT:\n"
+    "- Output ONLY the section name, copied exactly as it appears in the list, "
+    f"or {NO_TOPIC}. Nothing else: no number, no quotes, no explanation."
+)
+
+_SYSTEM_OTHER_JSON = _SYSTEM_OTHER.rsplit("OUTPUT:", 1)[0] + (
+    "OUTPUT:\n"
+    "- Reply with JSON: {\"topic\": \"<one name from the list, copied "
+    f"exactly, or {NO_TOPIC}>\"}}\n"
+    "- No other keys, no prose outside the JSON."
+)
+
+
+def parse_other_topic(reply: str, topics: Sequence[Topic]) -> str:
+    """The chosen section's name, or "" for NONE and for anything unparseable.
+
+    NONE is checked before `parse_label`, whose last resort would otherwise
+    find a section name inside "NONE — this is not about Apple".
+    """
+    blob = _json_blob(reply)
+    if blob is not None:
+        try:
+            data = json.loads(blob)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            got = str(data.get("topic") or "").strip()
+            if got.casefold() == NO_TOPIC.casefold():
+                return ""
+    first = next((ln for ln in reply.strip().splitlines() if ln.strip()), "")
+    if re.match(rf"\W*{NO_TOPIC}\b", first, re.IGNORECASE):
+        return ""
+    return parse_label(reply, topics)
+
+
+async def select_other_topic(
+    backend: LLMBackend, title: str, summary: str, topics: Sequence[Topic]
+) -> str:
+    """For an article filed under an ignored topic: the name of the section it
+    also belongs to, or "" when it belongs to none and should not run.
+
+    `topics` are the edition's own sections, ignored ones excluded. No
+    sections, no question: there is nothing it could also belong to.
+    """
+    if not topics:
+        return ""
+    listing = "\n".join(f"<topic>{t.line()}</topic>" for t in topics)
+    chars = backend.limits.topic_summary_chars
+    user = (
+        f"<topics>\n{listing}\n</topics>\n"
+        f"<ignored-story>\n<title>{title}</title>\n"
+        f"<summary>{(summary or '')[:chars]}</summary>\n</ignored-story>"
+    )
+    use_json = backend.supports_json
+    schema = None
+    if use_json:
+        schema = label_schema(topics)
+        schema["properties"]["topic"]["enum"].append(NO_TOPIC)
+    reply = await backend.chat(
+        _SYSTEM_OTHER_JSON if use_json else _SYSTEM_OTHER,
+        user,
+        max_tokens=LABEL_OUTPUT_TOKENS,
+        json_schema=schema,
+    )
+    return parse_other_topic(reply, topics)
 
 
 # --- 3. the main stories of a topic --------------------------------------

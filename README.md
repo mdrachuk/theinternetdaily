@@ -710,6 +710,28 @@ a model that could not read the day is not the paper the editor asked for.
 Leave out every `[[topic]]` and the stage names all the sections itself, as
 before.
 
+### Ignored topics
+
+A `[[topic]]` with `ignore = true` is a subject the paper does *not* carry:
+
+```toml
+[[topic]]
+name = "Sports"
+blurb = "sport: matches, results, athletes, clubs and tournaments"
+ignore = true
+```
+
+An ignored topic is never a column. The naming call is told the paper leaves
+it out, so it names no topic for it and invents no catch-all to hold its
+stories, and the merge drops it if the model names it anyway. It is still on
+the filing list, because that is how an article is recognised as being about
+it. An article filed there gets one more call: does it *also* genuinely belong
+to one of the edition's sections? If so it runs under that one. A story about
+Russia's strikes on Kyiv runs under the war, and one about a Moscow by-election
+doesn't run at all. A dropped article stays in the store, filed under the
+ignored topic with no `topic_order`. The edition leaves it out but marks it
+published anyway, so the next ingest doesn't file it again.
+
 **It is re-run over the whole unpublished set every ingest**, not just over
 new articles. A topic set describes *one* edition; a story that was gathered
 yesterday and still has not been published belongs under this paper's

@@ -539,3 +539,130 @@ def test_an_explicit_state_still_wins_over_the_environment(monkeypatch):
     monkeypatch.setenv("TID_STATE", "/data/state.db")
     args = build_parser().parse_args(["--state", "other.db", "topics"])
     assert store_url(args) == "other.db"
+
+
+# --- ignored topics -------------------------------------------------------
+
+SPORTS = tp.Topic("Sports", "matches and results", ignored=True)
+
+
+def test_an_ignored_topic_comes_from_the_config(tmp_path):
+    cfg = tmp_path / "sources.toml"
+    cfg.write_text(
+        '[[topic]]\nname = "World"\n'
+        '[[topic]]\nname = "Sports"\nblurb = "matches and results"\n'
+        'ignore = true\n'
+    )
+    from tid import config
+    assert tp.standing_topics(config.load_topics(cfg)) == [
+        tp.Topic("World"), SPORTS,
+    ]
+
+
+def test_ignore_has_to_be_a_boolean():
+    """`ignore = "no"` is truthy; it must not quietly hide a section."""
+    with pytest.raises(ValueError):
+        tp.standing_topics([{"name": "Sports", "ignore": "no"}])
+
+
+def test_the_merge_drops_a_topic_the_paper_ignores():
+    proposed = [tp.Topic("sports", "the model's own"), tp.Topic("Chip Wars")]
+    got = tp.merge_topics(proposed, STANDING[:1], [SPORTS])
+    assert [t.name for t in got] == ["Chip Wars", "World"]
+
+
+async def test_the_naming_call_is_told_what_the_paper_ignores():
+    def _respond(system: str, user: str) -> str:
+        return '{"topics": [{"name": "Sports"}, {"name": "Chip Wars"}]}'
+    backend = FakeBackend(respond=_respond)
+    got = await tp.propose_topics(
+        backend, [("A headline", "a summary")], STANDING[:1], [SPORTS]
+    )
+    (call,) = backend.calls
+    assert "<ignored>\n<topic>Sports — matches and results</topic>" in call["user"]
+    assert "does NOT cover the subjects listed in <ignored>" in call["system"]
+    assert "STANDING sections" in call["system"], "both rules, not one or other"
+    assert [t.name for t in got] == ["Chip Wars", "World"]
+
+
+@pytest.mark.parametrize("reply, want", [
+    ("Ukraine", "Ukraine"),
+    ('{"topic": "Ukraine"}', "Ukraine"),
+    ("NONE", ""),
+    ('{"topic": "NONE"}', ""),
+    ("none.", ""),
+    # The name in the explanation must not be what parse_label's last resort
+    # finds.
+    ("NONE — this is not about Ukraine", ""),
+    ("Weather", ""),
+])
+def test_parsing_an_ignored_articles_other_topic(reply, want):
+    assert tp.parse_other_topic(reply, TOPICS) == want
+
+
+async def test_the_other_topic_is_never_asked_with_nothing_to_choose():
+    backend = FakeBackend()
+    assert await tp.select_other_topic(backend, "T", "s", []) == ""
+    assert backend.calls == []
+
+
+@pytest.mark.parametrize("supports_json", [False, True])
+async def test_an_ignored_article_runs_only_under_another_topic(
+    tmp_path, supports_json
+):
+    """Filed under an ignored topic, an article is asked once more whether it
+    also belongs to one of the edition's own. Yes: it is filed there. No: it
+    keeps the ignored name and no place in the order."""
+    store = await _seeded_store(tmp_path, n=12)
+    backend = FakeBackend(supports_json=supports_json)
+    try:
+        assert await cmd_topics(store, backend, standing=[SPORTS]) == 0
+        rows = await store.pending_render()
+    finally:
+        await store.close()
+
+    label_calls = [c for c in backend.calls if "<headline>" in c["user"]]
+    assert all("<topic>Sports — matches and results</topic>" in c["user"]
+               for c in label_calls), "the ignored topic is filed into"
+    other_calls = [c for c in backend.calls if "<ignored-story>" in c["user"]]
+    assert other_calls
+    for c in other_calls:
+        assert "Sports" not in c["user"], "only the edition's own are offered"
+        if supports_json:
+            assert c["json_schema"]["properties"]["topic"]["enum"] == [
+                *FAKE_TOPICS, tp.NO_TOPIC]
+
+    dropped = [r for r in rows if r.topic == "Sports"]
+    shown = [r for r in rows if r.topic in FAKE_TOPICS]
+    assert dropped and len(dropped) < len(other_calls), (
+        "the fake rescues some and drops the rest"
+    )
+    assert len(dropped) + len(shown) == len(rows)
+    assert all(r.topic_order is None and r.main_rank is None for r in dropped)
+    assert {r.topic_order for r in shown} == {0, 1}, (
+        "an ignored topic takes no place in the order"
+    )
+
+
+async def test_the_edition_leaves_ignored_articles_out_but_publishes_them(
+    tmp_path, monkeypatch
+):
+    from tid import jobs
+    monkeypatch.setenv("TID_CACHE", str(tmp_path / "cache"))
+    store = await _seeded_store(tmp_path, n=12)
+    try:
+        await cmd_topics(store, FakeBackend(), standing=[SPORTS])
+        dropped = {r.id for r in await store.pending_render()
+                   if r.topic == "Sports"}
+        assert dropped
+        key = await jobs.current_key(store, SOURCES)
+        paper = await jobs.build_edition_for_key(
+            key, store, SOURCES, snapshot=True, ignored={"Sports"}
+        )
+        left = await store.pending_render()
+    finally:
+        await store.close()
+    assert paper.total == 12 - len(dropped)
+    assert not dropped & {i.id for i in paper.items}
+    assert "Sports" not in {s.name for s in (*paper.sections, *paper.below)}
+    assert left == [], "dropped is dealt with, not re-filed next edition"
