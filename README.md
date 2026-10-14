@@ -68,8 +68,9 @@ Everything you'd normally want to change is in **two files**:
 
 - **`sources.toml`** — which feeds, how many items per feed, which section
   each one files under, in what order; and the paper's standing sections
-  (`[[topic]]`), which every edition's topic set starts from. Three source
+  (`[[topic]]`), which every edition's topic set starts from. Four source
   kinds today: `kind = "hn"` (Hacker News, top-by-points via the Algolia API),
+  `kind = "lobsters"` (Lobsters, top-by-score via its JSON listing),
   `kind = "rss"` (any Atom/RSS feed via feedparser) and `kind = "youtube"` (a
   channel's uploads, with the player on the article's page).
 - **`tid/templates/`** — the paper itself. `style.css` is every colour,
@@ -539,6 +540,33 @@ min_points  = 100
 Every story clearing `since_hours` and `min_points` is taken. Those two are
 the dial: raise `min_points` for a quieter paper, don't reach for a count.
 
+### `kind = "lobsters"` — Lobsters via its JSON listing
+
+[Lobsters](https://lobste.rs/) is Hacker News with a smaller room, and the
+type is HN's shape: a story records its short id, score, comment count and
+tags, and its byline offers the discussion, then the link. There is no search
+API, so the fetch walks `/newest/page/N.json` — twenty-five stories a page,
+about a day each — until it is past `since_hours`, and keeps what clears
+`min_points`. Scores run an order of magnitude below HN's: a story in the
+twenties has done well, and the default gate is set accordingly.
+
+| field          | type | default | meaning |
+|----------------|------|---------|---------|
+| `name`         | string | required | display label, shown in every byline |
+| `kind`         | string | required | must be `"lobsters"` |
+| `section`      | string | the name | fallback column, when the topics stage does not file it |
+| `medium`       | string | `"read"` | `read`, `watch` or `listen` |
+| `since_hours`  | int  | `48`     | only consider stories submitted in the last N hours |
+| `min_points`   | int  | `10`     | story must have at least this score to qualify |
+
+```toml
+[[source]]
+name        = "Lobsters"
+kind        = "lobsters"
+since_hours = 48
+min_points  = 20
+```
+
 ### `kind = "rss"` — any Atom/RSS feed
 
 Parsed with [feedparser](https://feedparser.readthedocs.io/), so it accepts
@@ -588,7 +616,7 @@ button reads "Watch it here" rather than "Read the full text".
 |---------------|--------|----------|---------|
 | `name`        | string | required | display label, shown in every byline |
 | `kind`        | string | required | must be `"youtube"` |
-| `url`         | string | required | the channel: `https://www.youtube.com/@handle`, a `/channel/UC…` link, or a bare channel id |
+| `url`         | string | required | the channel: `https://www.youtube.com/@handle` (a `/videos` tab suffix is fine), a `/channel/UC…` link, or a bare channel id |
 | `section`     | string | the name | fallback column, when the topics stage does not file it |
 | `medium`      | string | `"read"` | set it to `"watch"` — the type does not do this for you |
 | `since_hours` | int    | unset    | don't gather videos published more than N hours ago |
@@ -1020,6 +1048,7 @@ theinternetdaily/
 │   │   ├── base.py       #   RawItem, Link, the SourceType protocol
 │   │   ├── rss.py        #   kind = "rss": feedparser, one chip
 │   │   ├── hn.py         #   kind = "hn": Algolia, discussion + link chips
+│   │   ├── lobsters.py   #   kind = "lobsters": JSON listing, same two chips
 │   │   ├── youtube.py    #   kind = "youtube": channel feed, player on the page
 │   │   └── wikipedia.py  #   kind = "wikipedia_events"
 │   ├── fetch.py          # compatibility re-exports of the fetchers

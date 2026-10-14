@@ -16,6 +16,7 @@ import httpx
 from .. import extract as _extract
 from .base import Link, RawItem, SourceType, clean_title
 from .hn import HackerNewsSource, fetch_hn
+from .lobsters import LobstersSource, fetch_lobsters
 from .rss import RssSource, entry_image, fetch_rss
 from .wikipedia import WikipediaEventsSource, fetch_wikipedia_events
 from .youtube import YouTubeSource, fetch_youtube
@@ -32,6 +33,7 @@ __all__ = [
     "extract",
     "fetch",
     "fetch_hn",
+    "fetch_lobsters",
     "fetch_rss",
     "fetch_wikipedia_events",
     "fetch_youtube",
@@ -45,7 +47,8 @@ DEFAULT_KIND = "rss"
 
 TYPES: dict[str, SourceType] = {
     t.kind: t for t in (
-        RssSource(), HackerNewsSource(), WikipediaEventsSource(), YouTubeSource(),
+        RssSource(), HackerNewsSource(), LobstersSource(), WikipediaEventsSource(),
+        YouTubeSource(),
     )
 }
 

@@ -62,6 +62,9 @@ async def resolve_channel_id(client: httpx.AsyncClient, url: str) -> str:
     """The `UC…` id behind a channel URL — a handle, a /channel/ link or a
     bare id all work. Fetched once; a channel does not change its id."""
     url = url.strip().rstrip("/")
+    # A link copied from a channel's tab — `/@handle/videos` — names the
+    # same channel as the handle alone.
+    url = re.sub(r"/(videos|shorts|streams|featured|about|community)$", "", url)
     if _CHANNEL_ID.match(url):
         return url
     tail = url.rsplit("/", 1)[-1]
