@@ -97,3 +97,10 @@ class SourceType(Protocol):
     #   def embed(self, url: str, extra: dict) -> str
     #       A URL the article page can put in a frame — a video player. ""
     #       (or no method) means the page prints the photograph as usual.
+    #
+    # And one attribute:
+    #
+    #   post_labels: tuple[str, ...]
+    #       Headline kickers ("Ask HN") that name a kind of post rather than a
+    #       series a desk files every day; `tid.series` never treats them as
+    #       one. None (the default) means every kicker is judged on its record.

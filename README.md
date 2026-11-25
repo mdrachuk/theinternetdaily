@@ -756,6 +756,40 @@ the store. On a local 12B model the topic-naming prompt is the one that
 scales with the size of the edition, so `BatchLimits.topic_max_articles` caps
 it at the 60 newest headlines (`VLLM_LIMITS`) to stay inside a 16k window.
 
+### Recurring headlines never lead
+
+Some desks open a big share of their output with the same words every day:
+Kyiv Independent's *"General Staff: Russia has lost 1,641,489 troops…"*,
+Meduza's *"Война. 1736-й день. …"*, the Guardian's *"Ukraine war briefing: …"*
+and *"Cop31 live: …"*. Each is a fine article. As a headline it is one the
+reader saw yesterday, and the mains pass — which sees only today's paper —
+kept choosing it, because a roundup of the day's biggest subject reads like
+the day's biggest story.
+
+So `tid/series.py` compares each headline with the ones its source filed over
+the previous two weeks, and calls it a **series** when:
+
+- the whole headline, numbers masked, matches an earlier day's (*the tally*);
+- its kicker — the words before the first `:` or `. ` — carries a number and
+  an earlier day had the same kicker with another (*"The Guide #270:"*); or
+- the kicker opens the source's headlines on at least half the days it
+  published lately, about once on each (*"Ukraine war latest:"*).
+
+A series is not offered to the mains pass, sorts to the foot of its column,
+and is never the lead, a story beside it or a column's top while anything
+else could be. It still runs. The "about once a day" is what keeps a label
+like *"Show HN:"* — several a day — from counting; one a source type knows is a
+kind of post, not a series, it names (`post_labels`: HN lists *Ask*, *Show*,
+*Tell* and *Launch HN*). *"Exclusive:"* or a wire credit turns up on too few
+days to qualify, and a columnist's byline sits at the end of a headline, where
+no kicker is read. Over the two weeks it was tuned on, it marked 53 of 3,440
+articles — all of them one of the series above — and changed five leads.
+
+The judgement is made fresh whenever an edition is collected and travels in
+its snapshot as `series`. A weekly series with no number in its kicker
+(MacRumors' *"Top Stories:"*) is not caught: two appearances in the window
+are not a pattern anyone could tell from a coincidence.
+
 ## Scheduling
 
 Two jobs. The **edition** (`ingest`) runs on the schedule below; the **store
@@ -1028,6 +1062,7 @@ theinternetdaily/
 │   ├── testing.py        # FakeBackend, so CI needs no GPU or API key
 │   ├── summarize.py      # summarization prompts + batching
 │   ├── topics.py         # name the edition's topics, file it, pick the mains
+│   ├── series.py         # recurring headlines ("Ukraine war latest:") never lead
 │   ├── wiki.py           # World news / Quote / DYK / tech feeds
 │   ├── config.py         # env-derived configuration (read per call)
 │   ├── jobs.py           # units of work a queue can run

@@ -37,6 +37,7 @@ __all__ = [
     "fetch_youtube",
     "get",
     "links_for",
+    "post_labels",
 ]
 
 # A `[[source]]` with no `kind` is a feed: that is what every one of them was
@@ -108,6 +109,12 @@ def embed_for(item: Any) -> str:
     source_type, url, extra = _presenting(item)
     embed = getattr(source_type, "embed", None)
     return embed(url, extra) if embed is not None else ""
+
+
+def post_labels(kind: str | None) -> tuple[str, ...]:
+    """The kickers a kind's headlines open with that name a kind of post, not
+    a series (see `tid.series`). Empty for a type that declares none."""
+    return tuple(getattr(get(kind), "post_labels", ()) or ())
 
 
 def links_for(item: Any) -> list[Link]:

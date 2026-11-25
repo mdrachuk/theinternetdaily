@@ -370,6 +370,23 @@ class SqliteStore:
 
         return await self._run(_w)
 
+    async def titles_since(
+        self, source: str, since: str
+    ) -> list[tuple[str, str]]:
+        def _q() -> list[tuple[str, str]]:
+            cur = self.con.execute(
+                """
+                SELECT title, COALESCE(published, surfaced, fetched_at)
+                  FROM article
+                 WHERE source = ?1
+                   AND COALESCE(published, surfaced, fetched_at) >= ?2
+                """,
+                (source, since),
+            )
+            return [(t, d) for t, d in cur.fetchall()]
+
+        return await self._run(_q)
+
     async def mark_rendered(self, article_ids: list[str], date: str) -> None:
         def _w() -> None:
             self.con.executemany(

@@ -176,6 +176,14 @@ class Store(Protocol):
 
     async def retire_before(self, cutoff: str, date: str) -> int: ...
 
+    async def titles_since(
+        self, source: str, since: str
+    ) -> list[tuple[str, str]]:
+        """Every headline `source` filed with a best date (`sort_date`) on or
+        after `since`, as `(title, date)` — published or not, readable or not.
+        What `tid.series` compares a new headline against."""
+        ...
+
     async def mark_rendered(self, article_ids: list[str], date: str) -> None: ...
 
     # --- meta -----------------------------------------------------------

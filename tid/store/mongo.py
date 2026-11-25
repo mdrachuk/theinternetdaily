@@ -246,6 +246,17 @@ class MongoStore:
         )
         return res.modified_count
 
+    async def titles_since(
+        self, source: str, since: str
+    ) -> list[tuple[str, str]]:
+        await self.ensure_indexes()
+        cursor = self.col.find(
+            {"source": source, "sort_date": {"$gte": since}},
+            {"title": 1, "sort_date": 1},
+        )
+        return [(d.get("title", ""), d.get("sort_date") or "")
+                async for d in cursor]
+
     async def mark_rendered(self, article_ids: list[str], date: str) -> None:
         if not article_ids:
             return
