@@ -82,6 +82,10 @@ async def fetch_hn(
 class HackerNewsSource:
     kind = "hn"
     label = "Hacker News, via Algolia"
+    # What kind of post a story is, not a series it belongs to: an "Ask HN"
+    # comes from a different person every time. `tid.series` would otherwise
+    # read one a day as a daily feature.
+    post_labels = ("Ask HN", "Show HN", "Tell HN", "Launch HN")
 
     async def fetch(
         self, client: httpx.AsyncClient, src: dict[str, Any]

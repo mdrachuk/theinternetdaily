@@ -16,6 +16,7 @@ from . import sources as source_types
 from .http import client_context
 from .llm import LLMBackend, make_backend
 from .render import build_pdf
+from .series import series_ids
 from .sources import RawItem
 from .store import ArticleRow, Store, norm_title, open_store
 from .topics import (
@@ -320,7 +321,10 @@ async def cmd_topics(
       2. one call per article choosing its most specific topic — and, for an
          article filed under an ignored topic, a second asking whether it
          also belongs to one of the edition's own (`select_other_topic`);
-      3. one call per topic naming that topic's main stories, in order.
+      3. one call per topic naming that topic's main stories, in order —
+         chosen from the stories that are not a recurring series
+         (`tid.series`): a daily briefing on the day's biggest subject would
+         otherwise be its main story every day.
 
     `standing` is the config's `[[topic]]` list, ignored ones included. An
     article that belongs only to an ignored topic is filed under that name
@@ -398,11 +402,22 @@ async def cmd_topics(
         else:
             unfiled.append(row)
 
+    series = await series_ids(store, rows, source_types.post_labels)
+    if series:
+        _log(f"  · {len(series)} recurring headline(s) kept out of the mains")
+
     async def _mains(name: str, group: list[ArticleRow]) -> list[int]:
+        # Positions into `group`, as the caller expects — but chosen only
+        # among the stories that are not a series.
+        offered = [i for i, r in enumerate(group) if r.id not in series]
+        if not offered:
+            return []
         async with sem:
-            return await select_main(
-                backend, name, [(r.title, r.summary or "") for r in group]
+            picks = await select_main(
+                backend, name,
+                [(group[i].title, group[i].summary or "") for i in offered],
             )
+        return [offered[p] for p in picks]
 
     names = [t.name for t in topics if filed[t.name]]
     chosen = await asyncio.gather(
@@ -506,6 +521,12 @@ async def collect_current_edition(
     for src in sources:
         name = src["name"]
         rows = await store.unpublished(name, floor)
+        series = await series_ids(
+            store, rows,
+            lambda kind: source_types.post_labels(
+                kind or source_types.kind_of(src)
+            ),
+        )
         for r in rows:
             out.append({
                 "id": r.id,
@@ -515,6 +536,9 @@ async def collect_current_edition(
                 "topic": r.topic,
                 "topic_order": r.topic_order,
                 "main_rank": r.main_rank,
+                # One more of something the source files every day: it runs,
+                # but never leads (`tid.series`, `tid.edition`).
+                "series": r.id in series,
                 # Layout hints that live in sources.toml, carried on every
                 # article so the edition builder never needs the config again.
                 "section": src.get("section") or name,

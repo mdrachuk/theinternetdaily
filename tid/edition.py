@@ -19,6 +19,11 @@ Vocabulary, borrowed from the page it produces:
 An article appears exactly once. The front page skims the top off each
 section; `below` carries whatever the skim left behind.
 
+A recurring headline — the daily casualty tally, "Ukraine war latest:", a
+live blog the desk reopens every morning (`tid.series`) — is marked `series`.
+It runs in its column, after the stories that are not series, and is never
+the lead, a story beside it, or a column's top while anything else could be.
+
 What a column *is* comes from the topic stage (`tid.topics`), which reads the
 edition and names its own sections: `topic` is the column, `topic_order` is
 where that column sits, and `main_rank` says which of its stories carry it. An
@@ -64,6 +69,7 @@ class Item:
     topic: str = ""                 # the edition's own filing; "" = unfiled
     topic_order: int | None = None  # where that topic sits in the edition
     main_rank: int | None = None    # 0 = the topic's lead story; None = not main
+    series: bool = False            # one more of a daily series (`tid.series`)
     # The source type (`tid.sources`) and its own fields. They are what lets
     # the page offer an HN story's discussion *and* its link: the type reads
     # the item id out of `extra` and names both. Carried in the snapshot, so
@@ -84,7 +90,9 @@ class Item:
 
     @property
     def is_main(self) -> bool:
-        return self.main_rank is not None
+        """A main story of its column. Never a series, whatever rank it was
+        given: a snapshot from before series were recognised may carry one."""
+        return self.main_rank is not None and not self.series
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -191,25 +199,31 @@ def _to_item(a: dict) -> Item:
         topic=(a.get("topic") or "").strip(),
         topic_order=_to_int(a.get("topic_order")),
         main_rank=_to_int(a.get("main_rank")),
+        series=a.get("series") is True,
         kind=str(a.get("kind") or "rss"),
         extra=dict(a["extra"]) if isinstance(a.get("extra"), dict) else {},
     )
 
 
 def _sorted_group(rows: list[Item]) -> list[Item]:
-    """One column's articles: the main stories first, then the rest by date.
+    """One column's articles: the main stories first, then the rest by date,
+    then the series.
 
     The mains are the topic stage's answer to "what is this section about
     today", and the layout's job is to put them where a reader looks first —
     the top of the column, and through `_take_lead`/`_take_side` the front
     page. Everything else keeps the newest-first order it always had, so an
     unlabelled column is ordered exactly as it was before topics existed.
+
+    Series go last, newest first among themselves: they are the part of the
+    column a reader has already seen yesterday.
     """
     mains = sorted((r for r in rows if r.is_main), key=lambda i: i.main_rank)
     rest = sorted(
         (r for r in rows if not r.is_main),
         key=lambda i: i.iso_date, reverse=True,
     )
+    rest.sort(key=lambda i: i.series)  # stable: date order holds within each
     return mains + rest
 
 
@@ -254,11 +268,15 @@ def _take_lead(groups: list[tuple[str, list[Item]]]) -> tuple[Item | None, str]:
     mistake.
     Falling back to the very first article keeps a dekless edition — a fresh
     store where summarizing has not run yet — from having no lead at all.
+
+    A series leads only when nothing else has a dek: a section made of nothing
+    but the daily tally gives up the lead to the next one down.
     """
-    for name, rows in groups:
-        for i, row in enumerate(rows):
-            if row.dek:
-                return rows.pop(i), name
+    for take_series in (False, True):
+        for name, rows in groups:
+            for i, row in enumerate(rows):
+                if row.dek and (take_series or not row.series):
+                    return rows.pop(i), name
     for name, rows in groups:
         if rows:
             return rows.pop(0), name
@@ -272,14 +290,18 @@ def _take_side(
 
     One from each section rather than n from one is what makes the top of the
     page a summary of the whole paper. The lead's own section is skipped while
-    there is anywhere else to look, for the same reason.
+    there is anywhere else to look, for the same reason — and so is a section
+    whose top is a series, which sorts last only when there is nothing else
+    in it.
     """
     out: list[Item] = []
     for skip_lead_section in (True, False):
         for name, rows in groups:
             if len(out) >= n:
                 return out
-            if skip_lead_section and name == lead_section:
+            if skip_lead_section and (
+                name == lead_section or (rows and rows[0].series)
+            ):
                 continue
             while rows and len(out) < n:
                 out.append(rows.pop(0))
